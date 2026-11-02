@@ -4,6 +4,8 @@ import os
 import re
 import threading
 
+import mounts
+
 CONFIG_DIR = os.environ.get("CONFIG_DIR", "/config")
 SETTINGS_PATH = os.path.join(CONFIG_DIR, "settings.json")
 
@@ -56,6 +58,8 @@ def env_defaults():
     d = dict(DEFAULTS)
     if _env_list("SOURCE_DIRS"):
         d["sources"] = _env_list("SOURCE_DIRS")
+    else:   # nothing specified: offer every folder that was mapped into the container
+        d["sources"] = mounts.suggested_sources(CONFIG_DIR)
     d["schedule_enabled"] = _env_bool("SCHEDULE_ENABLED", d["schedule_enabled"])
     d["interval_minutes"] = _env_int("INTERVAL_MINUTES", d["interval_minutes"])
     d["run_on_start"] = _env_bool("RUN_ON_START", d["run_on_start"])
@@ -153,7 +157,10 @@ def validate(data):
             errors.append("Move folder must be an absolute path")
         for src in s["sources"]:
             if _within(s["move_dir"], src):
-                errors.append(f"Move folder {s['move_dir']} must be outside the source folder {src}")
+                errors.append(f"Move folder {s['move_dir']} must not be inside the source folder {src}")
+            elif _within(src, s["move_dir"]):
+                errors.append(f"Source folder {src} must not be inside the move folder {s['move_dir']} - "
+                              "give the scanned folder and the processed folder separate mappings")
     if "move" in (s["archive_mode"], s["junk_mode"]) and not s["move_dir"]:
         errors.append("A move folder is required when an action is set to move")
 

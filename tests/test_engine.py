@@ -185,7 +185,7 @@ def test_settings():
     clean, errors = settings.validate({"sources": ["relative"], "threads": 99, "file_mode": "999"})
     check("settings: bad input rejected", len(errors) >= 3, errors)
     clean, errors = settings.validate({"sources": ["/a"], "archive_mode": "move", "move_dir": "/a/moved"})
-    check("settings: move dir inside source rejected", any("outside" in e for e in errors), errors)
+    check("settings: move dir inside source rejected", any("must not be inside" in e for e in errors), errors)
     clean, errors = settings.validate({"sources": ["/a"], "archive_mode": "move"})
     check("settings: move needs a folder", any("required" in e for e in errors), errors)
     clean, errors = settings.validate({"sources": "/a\n/b, /c", "junk_patterns": "*.diz\n*.nfo"})

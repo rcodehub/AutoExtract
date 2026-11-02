@@ -82,6 +82,17 @@ Open the web UI, go to **Settings**, add `/data/downloads` as a source, choose y
 ### Docker Compose
 See `docker-compose.yml`.
 
+## Paths: host path vs container path
+
+Docker maps a folder on your server (the **host path**, e.g. `/mnt/user/downloads`) to a folder inside the container (the **container path**, e.g. `/data/downloads`). AutoExtract can only see container paths, so **everything on the Settings page uses container paths** - never the `/mnt/user/...` path.
+
+* In the Unraid container settings, **Folder to scan** has a *Host Path* (your share) and a *Container Path* (leave `/data/downloads`, or choose your own). Add more with *Add another Path*.
+* On the Settings page, the list **Folders mapped into this container** shows exactly what the container can see, with free space and read/write status. Use *Add as source* / *Use as move folder* there, or the **Browse** button.
+* Under each folder you type, the page checks it right away: it tells you if the folder doesn't exist inside the container, if it looks like a host path, or if it is read-only.
+* On the very first start, if you don't set `SOURCE_DIRS`, every mapped folder except `/config` and `/processed` is added as a source automatically.
+* The **Processed folder** needs its own mapping (e.g. `/mnt/user/processed` -> `/processed`). It must not be inside a scanned folder, and a scanned folder must not be inside it - the page refuses both.
+* After changing a mapping in Unraid (Edit -> Apply), reload the page so the list updates.
+
 ## Things worth knowing
 
 * **Path mappings:** source folders and the move folder are container paths. Use the same kind of host path for all of them - all `/mnt/user/...` or all `/mnt/diskN/...`. Moving between a user share and a disk path of the same share can lose data on Unraid.
@@ -99,6 +110,7 @@ See `docker-compose.yml`.
 pip install -r requirements.txt
 python3 -I tests/test_engine.py            # engine tests (needs unzip + tar)
 python3 -I tests/test_auth.py              # login tests
+python3 -I tests/test_paths.py             # mapped-folder / path tests
 CONFIG_DIR=/tmp/cfg PORT=8080 python3 app/main.py   # run the web app locally
 ```
 

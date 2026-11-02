@@ -90,7 +90,17 @@ textarea { font-family: var(--mono); font-size: 13px; min-height: 84px; resize: 
 .check input { margin-top: 4px; } .check label { font-weight: 600; }
 .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0 18px; }
 .savebar { position: sticky; bottom: 0; background: var(--bg); padding: 12px 0; display: flex; gap: 12px; align-items: center; }
-.missing { color: var(--bad); font-size: 13px; }
+.missing { color: var(--bad); font-size: 13px; margin: -2px 0 8px; }
+.okline { color: var(--ok); font-size: 13px; margin: -2px 0 8px; }
+.warnline { color: var(--warn); font-size: 13px; margin: -2px 0 8px; }
+.mounts { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.mounts h3 { font-size: 14px; margin: 0 0 4px; }
+.mrow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 7px 0; border-bottom: 1px solid var(--line); }
+.mrow:last-child { border-bottom: 0; }
+.mrow .path { flex: 1 1 220px; }
+.badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 99px; background: var(--warn-soft); color: var(--warn); }
+.dlg-m { padding: 10px 14px 0; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.dlg-m span { font-size: 12px; color: var(--muted); }
 /* dialog */
 dialog { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); color: var(--text);
   width: min(560px, 94vw); padding: 0; }
@@ -173,9 +183,10 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
 
     <section class="card">
       <h2>Source folders</h2>
-      <div class="hint" style="margin:-4px 0 10px">Folders to scan, including all sub-folders. These are paths as seen <i>inside the container</i> (the right-hand side of your path mappings).</div>
+      <div class="hint" style="margin:-4px 0 10px">Folders to scan, including all sub-folders. Use the <b>container path</b> - the path as seen <i>inside</i> this container - not the <span class="path">/mnt/user/...</span> path on your server. The list below shows what has been mapped.</div>
       <div id="sources"></div>
       <button id="addSource" class="small">+ Add folder</button>
+      <div class="mounts" id="mountsBox"></div>
     </section>
 
     <section class="card">
@@ -214,6 +225,7 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
       </div>
       <div class="field" id="moveField"><label for="move_dir">Move folder</label>
         <div class="row"><input type="text" id="move_dir" placeholder="/processed"><button class="small" id="browseMove">Browse</button></div>
+        <div id="moveStatus"></div>
         <div class="hint">Must be outside the source folders. Files keep their folder layout under <span class="path">&lt;move folder&gt;/&lt;source folder name&gt;/...</span>; name clashes get a .1, .2 suffix.
         Use the same kind of path as the sources (don't mix <span class="path">/mnt/user</span> and <span class="path">/mnt/diskN</span> mappings).</div></div>
       <div class="field"><label for="junk_patterns">Junk file patterns</label><textarea id="junk_patterns" spellcheck="false"></textarea>
@@ -257,6 +269,7 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
 
 <dialog id="dlg">
   <div class="dlg-h">Choose a folder</div>
+  <div class="dlg-m" id="dlgMounts"></div>
   <div class="dlg-b" id="dlgList"></div>
   <div class="dlg-f"><span class="path" id="dlgPath">/</span>
     <button id="dlgCancel">Cancel</button><button class="primary" id="dlgOk">Select this folder</button></div>
@@ -405,13 +418,87 @@ $("btnLogout").addEventListener("click", () => { location.href = "/logout"; });
 // ---------------------------------------------------------------- settings
 let current = null;
 
-function sourceRow(value, exists) {
+function statusLine(info) {
+  if (!info) return null;
+  if (!info.exists) {
+    return h("div", { class: "missing" }, info.host_path
+      ? "This looks like a path on your Unraid server, not inside the container. Use the container path of your mapping instead - see the list of mapped folders below."
+      : "This folder does not exist inside the container. Choose one of the mapped folders below, or fix the path mapping in the Unraid container settings.");
+  }
+  const where = info.mount ? " (inside " + info.mount + ")" : "";
+  if (!info.readable) return h("div", { class: "missing" }, "The container cannot read this folder" + where + ".");
+  if (!info.writable) return h("div", { class: "warnline" }, "Read-only" + where + ": archives can be read but not extracted or removed here. Set the mapping to Read/Write.");
+  return h("div", { class: "okline" }, "OK - readable and writable" + where);
+}
+
+// re-check a typed path against the container and show the result in `holder`
+function bindCheck(input, holder) {
+  let t = null, last = null, seq = 0;
+  const run = async () => {
+    const v = input.value.trim();
+    if (v === last) return;                 // nothing new: leave the line alone (no flicker / layout shift)
+    last = v;
+    const mine = ++seq;
+    if (!v) { holder.replaceChildren(); return; }
+    try {
+      const d = await api("/api/pathinfo?path=" + encodeURIComponent(v));
+      if (mine !== seq) return;             // a newer check is already running
+      const l = statusLine(d.info);
+      holder.replaceChildren(...(l ? [l] : []));   // swap in one step
+    } catch (e) { /* ignore */ }
+  };
+  input.addEventListener("input", () => { clearTimeout(t); t = setTimeout(run, 450); });
+  input.addEventListener("change", run);
+  run.prime = (v) => { last = v; };
+  return run;
+}
+
+function sourceRow(value, info) {
   const input = h("input", { type: "text", placeholder: "/data/downloads" }); input.value = value || "";
-  const row = h("div", {}, h("div", { class: "row" }, input,
-    h("button", { class: "small", onclick: () => pickFolder(input.value || "/", (p) => { input.value = p; }) }, "Browse"),
-    h("button", { class: "small danger", onclick: () => row.remove() }, "Remove")));
-  if (exists === false) row.append(h("div", { class: "missing" }, "This folder does not exist inside the container - check the path mapping."));
+  const status = h("div", {});
+  const row = h("div", { class: "src" }, h("div", { class: "row" }, input,
+    h("button", { class: "small", onclick: () => pickFolder(input.value || "/", (p) => { input.value = p; input.dispatchEvent(new Event("change")); }) }, "Browse"),
+    h("button", { class: "small danger", onclick: () => row.remove() }, "Remove")), status);
+  const check = bindCheck(input, status);
+  const l = statusLine(info); if (l) { status.append(l); check.prime(input.value.trim()); }
   return row;
+}
+
+function addSource(path) {
+  const have = [...$("sources").querySelectorAll("input")];
+  if (have.some((i) => i.value.trim() === path)) return;
+  const empty = have.find((i) => !i.value.trim());
+  if (empty) { empty.value = path; empty.dispatchEvent(new Event("change")); return; }
+  const row = sourceRow(path); $("sources").append(row);
+  row.querySelector("input").dispatchEvent(new Event("change"));
+}
+
+// ---- folders mapped into the container
+let mountList = [];
+const fmtBytes = (n) => n == null ? "" : n >= 1e12 ? (n / 1e12).toFixed(1) + " TB" : n >= 1e9 ? (n / 1e9).toFixed(0) + " GB" : (n / 1e6).toFixed(0) + " MB";
+
+async function loadMounts() {
+  const d = await api("/api/mounts");
+  mountList = d.mounts;
+  const box = $("mountsBox"); box.replaceChildren();
+  const data = d.mounts.filter((m) => !m.config);
+  box.append(h("h3", {}, "Folders mapped into this container"));
+  if (!data.length) {
+    box.append(h("div", { class: "banner warn" }, "No data folders are mapped into this container yet. In Unraid: Docker tab -> AutoExtract -> Edit, set the Host Path of \"Folder to scan\" to the share you want scanned (the Container Path can stay /data/downloads), press Apply, then reload this page."));
+    return;
+  }
+  box.append(h("div", { class: "hint", style: "margin-bottom:6px" }, "These are the container paths to use here. Everything you mapped in the Unraid template shows up in this list."));
+  for (const m of data) {
+    box.append(h("div", { class: "mrow" },
+      h("span", { class: "path" }, m.path),
+      h("span", { class: "muted small" }, [fmtBytes(m.free) && fmtBytes(m.free) + " free", m.fstype].filter(Boolean).join(" - ")),
+      m.writable ? "" : h("span", { class: "badge" }, "read-only"),
+      h("button", { class: "small", onclick: () => addSource(m.path) }, "Add as source"),
+      h("button", { class: "small", title: "Sets archives and junk files to be moved here instead of deleted", onclick: () => {
+        $("archive_mode").value = "move"; $("junk_mode").value = "move"; syncMove();
+        $("move_dir").value = m.path; $("move_dir").dispatchEvent(new Event("change"));
+      } }, "Use as move folder")));
+  }
 }
 
 async function loadSettings() {
@@ -419,14 +506,16 @@ async function loadSettings() {
   current = d.settings;
   const s = d.settings;
   const src = $("sources"); src.replaceChildren();
-  for (const p of s.sources) src.append(sourceRow(p, d.sources_exist[p]));
+  for (const p of s.sources) src.append(sourceRow(p, d.sources_info[p]));
   if (!s.sources.length) src.append(sourceRow(""));
   for (const k of ["schedule_enabled", "run_on_start", "overwrite", "set_perms", "chown_enabled"]) $(k).checked = s[k];
   for (const k of ["interval_minutes", "min_age_minutes", "max_passes", "file_mode", "dir_mode", "uid", "gid", "archive_mode", "junk_mode", "move_dir"]) $(k).value = s[k];
   $("threads_in").value = s.threads;
   $("junk_patterns").value = s.junk_patterns.join("\n");
   $("exclude_dirs").value = s.exclude_dirs.join("\n");
+  const ms = $("moveStatus"); ms.replaceChildren(); const ml = s.move_dir ? statusLine(d.move_info) : null; if (ml) ms.append(ml);
   syncMove();
+  loadMounts().catch(() => {});
 
   $("btnLogout").hidden = !d.auth_enabled;
   const warn = $("toolWarn"); warn.replaceChildren();
@@ -445,6 +534,7 @@ function syncMove() {
 $("archive_mode").addEventListener("change", syncMove);
 $("junk_mode").addEventListener("change", syncMove);
 $("addSource").addEventListener("click", () => $("sources").append(sourceRow("")));
+bindCheck($("move_dir"), $("moveStatus"));
 $("browseMove").addEventListener("click", () => pickFolder($("move_dir").value || "/", (p) => { $("move_dir").value = p; }));
 
 function collect() {
@@ -485,7 +575,16 @@ async function browse(path) {
   for (const n of d.dirs) list.append(h("div", { onclick: () => browse((d.path === "/" ? "" : d.path) + "/" + n) }, n + "/"));
   if (d.error) list.append(h("div", { class: "missing" }, d.error));
 }
-function pickFolder(start, cb) { pickCb = cb; browse(start).catch(() => browse("/")); $("dlg").showModal(); }
+function pickFolder(start, cb) {
+  pickCb = cb;
+  const sc = $("dlgMounts"); sc.replaceChildren();
+  const data = mountList.filter((m) => !m.config);
+  if (data.length) {
+    sc.append(h("span", {}, "Mapped folders:"));
+    for (const m of data) sc.append(h("button", { class: "small", onclick: () => browse(m.path) }, m.path));
+  }
+  browse(start).catch(() => browse("/")); $("dlg").showModal();
+}
 $("dlgCancel").addEventListener("click", () => $("dlg").close());
 $("dlgOk").addEventListener("click", () => { if (pickCb) pickCb(pickPath); $("dlg").close(); });
 

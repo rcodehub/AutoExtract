@@ -206,6 +206,8 @@ class Engine:
                 for s in sources:
                     if cfg["move_dir"] == s or cfg["move_dir"].startswith(s + os.sep):
                         raise RuntimeError(f"Move folder {cfg['move_dir']} is inside source {s}")
+                    if s.startswith(cfg["move_dir"] + os.sep):
+                        raise RuntimeError(f"Source {s} is inside the move folder {cfg['move_dir']}")
                 if not dry_run:
                     os.makedirs(cfg["move_dir"], exist_ok=True)
                     self._apply_perm(cfg["move_dir"], True, cfg)

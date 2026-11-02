@@ -8,6 +8,7 @@ from datetime import timedelta
 
 from flask import Flask, jsonify, redirect, request, send_from_directory, session
 
+import mounts
 import settings
 from engine import Engine
 
@@ -198,12 +199,27 @@ def api_settings():
             return jsonify(ok=False, errors=errors), 400
         return jsonify(ok=True, settings=clean)
     cfg = settings.load()
+    mnt = mounts.list_mounts(CONFIG_DIR)
     return jsonify(
         settings=cfg,
         tools=engine.tools,
-        sources_exist={p: os.path.isdir(p) for p in cfg["sources"]},
+        sources_info={p: mounts.path_info(p, mnt) for p in cfg["sources"]},
+        move_info=mounts.path_info(cfg["move_dir"], mnt) if cfg["move_dir"] else None,
         auth_enabled=AUTH_ON,
     )
+
+
+@app.route("/api/mounts")
+def api_mounts():
+    """Folders mapped into the container (container paths), for the Settings page."""
+    return jsonify(mounts=mounts.list_mounts(CONFIG_DIR), config_dir=CONFIG_DIR)
+
+
+@app.route("/api/pathinfo")
+def api_pathinfo():
+    """Live check of a typed path, so the page can warn before saving."""
+    p = os.path.normpath(request.args.get("path") or "/")
+    return jsonify(info=mounts.path_info(p, mounts.list_mounts(CONFIG_DIR)))
 
 
 @app.route("/api/run", methods=["POST"])
