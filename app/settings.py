@@ -171,19 +171,39 @@ def validate(data):
     return s, errors
 
 
-def load():
+def load_with_report():
+    """Return (settings, problems, source). One bad value never throws the others away:
+    every valid saved setting is kept, only the invalid ones fall back to their default.
+    source: "file" (saved settings), "defaults" (nothing saved yet) or "unreadable"."""
     with _lock:
+        data, source = None, "defaults"
         try:
             with open(SETTINGS_PATH) as f:
                 data = json.load(f)
+            source = "file"
+            if not isinstance(data, dict):
+                data, source = None, "unreadable"
+        except FileNotFoundError:
+            pass
         except (OSError, ValueError):
-            data = None
-        if data is None:                      # first run: seed from template variables
+            source = "unreadable"
+        if data is None:                      # nothing usable saved: first-run defaults
             data = env_defaults()
-        clean, errors = validate(data)
-        if errors:                            # a hand-damaged file must not stop the app
-            clean = dict(DEFAULTS)
-        return clean
+        clean, problems = validate(data)
+        return clean, problems, source
+
+
+def load():
+    return load_with_report()[0]
+
+
+def storage_info():
+    """Where settings live and whether they are really being kept."""
+    try:
+        saved_at = os.path.getmtime(SETTINGS_PATH)
+    except OSError:
+        saved_at = None
+    return {"path": SETTINGS_PATH, "saved_at": saved_at}
 
 
 def save(data):
@@ -191,9 +211,16 @@ def save(data):
     if errors:
         return None, errors
     with _lock:
-        os.makedirs(CONFIG_DIR, exist_ok=True)
-        tmp = SETTINGS_PATH + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(clean, f, indent=2)
-        os.replace(tmp, SETTINGS_PATH)
+        try:
+            os.makedirs(CONFIG_DIR, exist_ok=True)
+            tmp = SETTINGS_PATH + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(clean, f, indent=2)
+            os.replace(tmp, SETTINGS_PATH)
+            with open(SETTINGS_PATH) as f:        # read it back: prove it was stored
+                if json.load(f) != clean:
+                    raise OSError("settings file did not read back correctly")
+        except (OSError, ValueError) as e:
+            return None, [f"Could not store settings in {SETTINGS_PATH} ({e}). "
+                          "Check that the App data folder is mapped to a writable folder."]
     return clean, []

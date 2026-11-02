@@ -96,5 +96,34 @@ d = c.get("/api/settings").get_json()
 check("api/settings reports per-source info",
       d["sources_info"]["/mnt/user/nope"]["host_path"] and d["sources_info"][dl]["exists"] and d["move_info"]["exists"], d.get("sources_info"))
 
+# --- persistence: a bad value must not wipe the good ones; problems and storage are reported
+import json
+import settings as S
+open(S.SETTINGS_PATH, "w").write(json.dumps({"sources": [dl], "threads": 7, "interval_minutes": "oops",
+                                              "junk_patterns": ["*.nfo"], "schedule_enabled": True}))
+cfg_now, problems, source = S.load_with_report()
+check("lenient load keeps valid values", cfg_now["threads"] == 7 and cfg_now["sources"] == [dl]
+      and cfg_now["junk_patterns"] == ["*.nfo"] and cfg_now["schedule_enabled"] is True, cfg_now)
+check("lenient load reports the bad one", source == "file" and any("interval" in x.lower() for x in problems), problems)
+d = c.get("/api/settings").get_json()
+check("api/settings exposes problems + storage",
+      d["problems"] and d["storage"]["source"] == "file" and d["storage"]["path"] == S.SETTINGS_PATH
+      and d["storage"]["saved_at"] and d["storage"]["config_mapped"] is True, d.get("storage"))
+open(S.SETTINGS_PATH, "w").write("{not json")
+_, problems, source = S.load_with_report()
+check("unreadable file reported", source == "unreadable", source)
+os.remove(S.SETTINGS_PATH)
+check("missing file = defaults", S.load_with_report()[2] == "defaults")
+r = c.post("/api/settings", json={"sources": [dl], "threads": 3})
+check("save works and round-trips", r.status_code == 200 and S.load()["threads"] == 3, r.get_data(as_text=True))
+check("saved file is valid", c.get("/api/settings").get_json()["storage"]["source"] == "file")
+# unwritable location -> clear error, not silent success
+real = S.SETTINGS_PATH
+S.SETTINGS_PATH = os.path.join(root, "no-such-dir", "x", "settings.json")
+S.CONFIG_DIR = "/proc/nonexistent-ea"
+res, errs = S.save({"sources": [dl]})
+check("save failure is reported", res is None and errs and "Could not store" in errs[0], errs)
+S.SETTINGS_PATH, S.CONFIG_DIR = real, cfg
+
 print("\nALL PASSED" if not FAILS else f"\nFAILED: {FAILS}")
 sys.exit(1 if FAILS else 0)

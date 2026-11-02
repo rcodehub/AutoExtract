@@ -198,10 +198,14 @@ def api_settings():
         if errors:
             return jsonify(ok=False, errors=errors), 400
         return jsonify(ok=True, settings=clean)
-    cfg = settings.load()
+    cfg, problems, source = settings.load_with_report()
     mnt = mounts.list_mounts(CONFIG_DIR)
+    storage = dict(settings.storage_info(), source=source,
+                   config_mapped=any(m["config"] for m in mnt))
     return jsonify(
         settings=cfg,
+        problems=problems,
+        storage=storage,
         tools=engine.tools,
         sources_info={p: mounts.path_info(p, mnt) for p in cfg["sources"]},
         move_info=mounts.path_info(cfg["move_dir"], mnt) if cfg["move_dir"] else None,
@@ -256,6 +260,13 @@ def api_browse():
     except OSError as e:
         return jsonify(path=path, parent=os.path.dirname(path), dirs=[], error=str(e))
     return jsonify(path=path, parent=os.path.dirname(path) if path != "/" else None, dirs=dirs)
+
+
+_cfg, _problems, _src = settings.load_with_report()
+print(f"[settings] {settings.SETTINGS_PATH}: {_src}"
+      + (f" - ignored invalid values: {'; '.join(_problems)}" if _problems else "")
+      + f" | {CONFIG_DIR} is {'a mapped folder (settings persist)' if any(m['config'] for m in mounts.list_mounts(CONFIG_DIR)) else 'NOT a mapped folder - settings will be lost when the container is recreated!'}",
+      flush=True)
 
 
 if __name__ == "__main__":
