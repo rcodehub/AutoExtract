@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>autoextract</Name>
+  <Repository>ghcr.io/rcodehub/autoextract:latest</Repository>
+  <Registry>https://github.com/rcodehub/AutoExtract/pkgs/container/autoextract</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/rcodehub/AutoExtract/issues</Support>
+  <Project>https://github.com/rcodehub/AutoExtract</Project>
+  <Overview>Scans your folders on a schedule and automatically extracts zip, rar, 7z and tar archives into the folder they are in, then extracts any archives found inside those, and cleans up (deletes or moves) the processed archives and junk files such as *.diz. Works one folder at a time, with parallel extraction inside a folder, a live status page, and a settings page for every option. Created entirely by AI (Claude). It has been tested, but not in every situation - do your own due diligence before relying on it with data you cannot replace, and before exposing it to the internet.</Overview>
+  <Category>Tools: Other:</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/rcodehub/Unraid-CA-Apps/main/autoextract.xml</TemplateURL>
+  <Icon/>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+  <Config Name="Web UI port" Target="8080" Default="8844" Mode="tcp" Description="Port for the web UI (status + settings)." Type="Port" Display="always" Required="true" Mask="false">8844</Config>
+  <Config Name="App data" Target="/config" Default="/mnt/user/appdata/autoextract" Mode="rw" Description="Settings, scan history and logs." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/autoextract</Config>
+  <Config Name="Folder to scan" Target="/data/downloads" Default="/mnt/user/downloads" Mode="rw" Description="A folder to scan (including sub-folders). Needs read/write. Use 'Add another Path' for more folders, then list them on the Settings page." Type="Path" Display="always" Required="false" Mask="false">/mnt/user/downloads</Config>
+  <Config Name="Processed folder (optional)" Target="/processed" Default="" Mode="rw" Description="Only if you want processed archives MOVED instead of deleted. Must not be inside a scanned folder. Use the same kind of path as the scan folders (all /mnt/user or all /mnt/diskN)." Type="Path" Display="always" Required="false" Mask="false"/>
+  <Config Name="Timezone" Target="TZ" Default="America/New_York" Mode="" Description="Used for the times shown in logs." Type="Variable" Display="always" Required="false" Mask="false">America/New_York</Config>
+  <Config Name="UI username" Target="UI_USERNAME" Default="admin" Mode="" Description="Login for the web UI (used only when a password is set)." Type="Variable" Display="always" Required="false" Mask="false">admin</Config>
+  <Config Name="UI password" Target="UI_PASSWORD" Default="" Mode="" Description="Set a password to require a login for the web UI. Strongly recommended." Type="Variable" Display="always" Required="false" Mask="true"/>
+  <Config Name="First run: source folders" Target="SOURCE_DIRS" Default="/data/downloads" Mode="" Description="Comma separated container paths to scan. Only used to seed the settings on the very first start - change them later on the Settings page." Type="Variable" Display="advanced" Required="false" Mask="false">/data/downloads</Config>
+  <Config Name="First run: scan automatically" Target="SCHEDULE_ENABLED" Default="false" Mode="" Description="true = scan on an interval. First start only." Type="Variable" Display="advanced" Required="false" Mask="false">false</Config>
+  <Config Name="First run: interval (minutes)" Target="INTERVAL_MINUTES" Default="60" Mode="" Description="Minutes between scans. First start only." Type="Variable" Display="advanced" Required="false" Mask="false">60</Config>
+  <Config Name="First run: threads" Target="THREADS" Default="4" Mode="" Description="Parallel extractions within a folder. First start only." Type="Variable" Display="advanced" Required="false" Mask="false">4</Config>
+  <Config Name="First run: archive action" Target="ARCHIVE_MODE" Default="delete" Mode="" Description="delete or move. First start only." Type="Variable" Display="advanced" Required="false" Mask="false">delete</Config>
+  <Config Name="First run: junk action" Target="JUNK_MODE" Default="delete" Mode="" Description="delete or move. First start only." Type="Variable" Display="advanced" Required="false" Mask="false">delete</Config>
+  <Config Name="First run: move folder" Target="MOVE_DIR" Default="" Mode="" Description="Container path used when an action is 'move', e.g. /processed. First start only." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="First run: junk patterns" Target="JUNK_PATTERNS" Default="*.diz" Mode="" Description="Comma separated file name patterns. First start only." Type="Variable" Display="advanced" Required="false" Mask="false">*.diz</Config>
+  <Config Name="Owner user ID (optional)" Target="PUID" Default="" Mode="" Description="Set (e.g. 99) to also change the owner of processed files. Unraid's nobody = 99. First start only." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Owner group ID (optional)" Target="PGID" Default="" Mode="" Description="Set (e.g. 100) with the user ID above. Unraid's users = 100. First start only." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+</Container>

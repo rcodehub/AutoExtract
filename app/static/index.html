@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AutoExtract</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230f766e'/%3E%3Cpath d='M9 8h10l4 4v12H9z' fill='none' stroke='white' stroke-width='2' stroke-linejoin='round'/%3E%3Cpath d='M14 8v3h-2v2h2v2h-2v2h2' stroke='white' stroke-width='1.5' fill='none'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #f4f6f8; --panel: #ffffff; --text: #17202a; --muted: #5d6b7a; --line: #dde3ea;
+  --accent: #0f766e; --accent-ink: #ffffff; --accent-soft: #d9f0ed;
+  --warn: #b45309; --warn-soft: #fef3c7; --bad: #b42318; --bad-soft: #fde8e6; --ok: #15803d;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --radius: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #11161c; --panel: #1a222b; --text: #e6ebf0; --muted: #93a1b0; --line: #2b3643;
+    --accent: #2dd4bf; --accent-ink: #052e2a; --accent-soft: #12332f;
+    --warn: #fbbf24; --warn-soft: #3a2e10; --bad: #f87171; --bad-soft: #3b1a1a; --ok: #4ade80;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+header { background: var(--panel); border-bottom: 1px solid var(--line); }
+.wrap { max-width: 1040px; margin: 0 auto; padding: 0 16px; }
+.top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 14px 0; }
+h1 { font-size: 18px; margin: 0; letter-spacing: .2px; }
+.pill { font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 99px;
+  background: var(--accent-soft); color: var(--accent); }
+.pill.run { background: var(--accent); color: var(--accent-ink); }
+.pill.stop { background: var(--warn-soft); color: var(--warn); }
+.spacer { flex: 1; }
+button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text);
+  padding: 7px 14px; border-radius: 8px; cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+button.danger { color: var(--bad); }
+button.small { padding: 4px 10px; font-size: 13px; }
+nav { display: flex; gap: 4px; }
+nav button { border: 0; border-bottom: 3px solid transparent; border-radius: 0; background: none;
+  padding: 10px 14px; color: var(--muted); font-weight: 600; }
+nav button.on { color: var(--text); border-bottom-color: var(--accent); }
+main { padding: 18px 0 60px; }
+.tab { display: none; } .tab.on { display: block; }
+.grid { display: grid; gap: 14px; }
+.cards { grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+.card h3 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); }
+.big { font-size: 20px; font-weight: 650; }
+.muted { color: var(--muted); } .small { font-size: 13px; }
+.path { font-family: var(--mono); font-size: 13px; word-break: break-all; }
+section.card { margin-top: 14px; }
+section.card > h2 { font-size: 15px; margin: 0 0 10px; }
+.bar { height: 12px; border-radius: 99px; background: var(--line); overflow: hidden; }
+.bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .4s; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px 22px; margin-top: 12px; }
+.chips b { font-size: 18px; display: block; line-height: 1.1; }
+.chips span { font-size: 12px; color: var(--muted); }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); font-weight: 600; }
+tr:last-child td { border-bottom: 0; }
+td.n { width: 70px; white-space: nowrap; } td.t { width: 80px; white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }
+.idle { color: var(--muted); }
+.log { background: #0d1117; color: #d0d7de; font: 12.5px/1.5 var(--mono); border-radius: 8px;
+  padding: 10px 12px; height: 300px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+.log .warn { color: #fbbf24; } .log .error { color: #f87171; } .log .ts { color: #6e7b8a; }
+.banner { padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; font-size: 14px; }
+.banner.warn { background: var(--warn-soft); color: var(--warn); }
+.banner.bad { background: var(--bad-soft); color: var(--bad); }
+.banner.ok { background: var(--accent-soft); color: var(--accent); }
+.fail { padding: 6px 0; border-bottom: 1px solid var(--line); } .fail:last-child { border: 0; }
+.fail .err { color: var(--bad); font-size: 13px; }
+/* settings */
+.field { margin: 0 0 14px; }
+.field > label { display: block; font-weight: 600; margin-bottom: 4px; }
+.hint { font-size: 13px; color: var(--muted); margin-top: 3px; }
+input[type=text], input[type=number], select, textarea {
+  font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
+  border-radius: 8px; padding: 7px 10px; width: 100%; }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+input.num { width: 120px; } input.mode { width: 90px; font-family: var(--mono); }
+textarea { font-family: var(--mono); font-size: 13px; min-height: 84px; resize: vertical; }
+.row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+.row input { flex: 1; }
+.check { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 10px; }
+.check input { margin-top: 4px; } .check label { font-weight: 600; }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0 18px; }
+.savebar { position: sticky; bottom: 0; background: var(--bg); padding: 12px 0; display: flex; gap: 12px; align-items: center; }
+.missing { color: var(--bad); font-size: 13px; }
+/* dialog */
+dialog { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); color: var(--text);
+  width: min(560px, 94vw); padding: 0; }
+dialog::backdrop { background: rgba(0,0,0,.5); }
+.dlg-h { padding: 12px 16px; border-bottom: 1px solid var(--line); font-weight: 600; }
+.dlg-b { padding: 8px 8px; max-height: 50vh; overflow: auto; }
+.dlg-b div { padding: 6px 10px; border-radius: 6px; cursor: pointer; font-family: var(--mono); font-size: 13px; }
+.dlg-b div:hover { background: var(--accent-soft); }
+.dlg-f { padding: 12px 16px; border-top: 1px solid var(--line); display: flex; gap: 8px; justify-content: flex-end; align-items: center; }
+.dlg-f .path { margin-right: auto; }
+@media (max-width: 560px) { .top button { padding: 6px 10px; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="top">
+      <h1>AutoExtract</h1>
+      <span id="pill" class="pill">Idle</span>
+      <span class="spacer"></span>
+      <button id="btnRun" class="primary">Run now</button>
+      <button id="btnDry">Dry run</button>
+      <button id="btnStop" class="danger" disabled>Stop</button>
+      <button id="btnLogout" hidden>Log out</button>
+    </div>
+    <nav>
+      <button data-tab="status" class="on">Status</button>
+      <button data-tab="settings">Settings</button>
+      <button data-tab="history">History</button>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <div id="banner"></div>
+
+  <!-- STATUS -->
+  <div id="tab-status" class="tab on">
+    <div class="grid cards">
+      <div class="card"><h3>Next scan</h3><div id="next" class="big">-</div><div id="nextSub" class="muted small"></div></div>
+      <div class="card"><h3>Last scan</h3><div id="last" class="big">-</div><div id="lastSub" class="muted small"></div></div>
+      <div class="card"><h3>Current folder</h3><div id="curdir" class="path">-</div><div id="curpass" class="muted small"></div></div>
+    </div>
+
+    <section class="card">
+      <h2>Progress</h2>
+      <div class="bar"><i id="barfill"></i></div>
+      <div class="chips">
+        <div><b id="cDone">0</b><span>done</span></div>
+        <div><b id="cFound">0</b><span>found</span></div>
+        <div><b id="cLeft">0</b><span>remaining</span></div>
+        <div><b id="cExt">0</b><span>extracted</span></div>
+        <div><b id="cFail">0</b><span>failed</span></div>
+        <div><b id="cJunk">0</b><span>junk handled</span></div>
+        <div><b id="cDef">0</b><span>too recent (skipped)</span></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Threads</h2>
+      <table><thead><tr><th>Thread</th><th>Working on</th><th style="text-align:right">Time</th></tr></thead>
+        <tbody id="threads"><tr><td colspan="3" class="idle">Not running</td></tr></tbody></table>
+    </section>
+
+    <section class="card" id="failCard" hidden>
+      <h2>Failed archives <span class="muted small">(left in place)</span></h2>
+      <div id="fails"></div>
+    </section>
+
+    <section class="card">
+      <h2>Log</h2>
+      <div id="log" class="log"></div>
+    </section>
+  </div>
+
+  <!-- SETTINGS -->
+  <div id="tab-settings" class="tab">
+    <div id="toolWarn"></div>
+    <div id="settingsErr"></div>
+
+    <section class="card">
+      <h2>Source folders</h2>
+      <div class="hint" style="margin:-4px 0 10px">Folders to scan, including all sub-folders. These are paths as seen <i>inside the container</i> (the right-hand side of your path mappings).</div>
+      <div id="sources"></div>
+      <button id="addSource" class="small">+ Add folder</button>
+    </section>
+
+    <section class="card">
+      <h2>Schedule</h2>
+      <div class="check"><input type="checkbox" id="schedule_enabled"><div><label for="schedule_enabled">Scan automatically</label>
+        <div class="hint">Otherwise scans only run when you press Run now.</div></div></div>
+      <div class="two">
+        <div class="field"><label for="interval_minutes">Wait between scans (minutes)</label>
+          <input type="number" class="num" id="interval_minutes" min="1">
+          <div class="hint">Counted from the end of the previous scan.</div></div>
+        <div class="check" style="align-self:center"><input type="checkbox" id="run_on_start"><div><label for="run_on_start">Also scan at container start</label></div></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Performance &amp; safety</h2>
+      <div class="two">
+        <div class="field"><label for="threads_in">Threads</label><input type="number" class="num" id="threads_in" min="1" max="32">
+          <div class="hint">Archives extracted at the same time within one folder. 2-4 is usually best on spinning disks.</div></div>
+        <div class="field"><label for="min_age_minutes">Skip archives newer than (minutes)</label><input type="number" class="num" id="min_age_minutes" min="0">
+          <div class="hint">Avoids touching files that are still downloading or copying. 0 = no limit.</div></div>
+        <div class="field"><label for="max_passes">Max nested levels per folder</label><input type="number" class="num" id="max_passes" min="1" max="100">
+          <div class="hint">Safety cap for archives inside archives.</div></div>
+      </div>
+      <div class="check"><input type="checkbox" id="overwrite"><div><label for="overwrite">Overwrite existing files</label>
+        <div class="hint">When an extracted file already exists. Off = keep the existing file.</div></div></div>
+    </section>
+
+    <section class="card">
+      <h2>After extracting</h2>
+      <div class="two">
+        <div class="field"><label for="archive_mode">Archives that extracted fine</label>
+          <select id="archive_mode"><option value="delete">Delete</option><option value="move">Move to the move folder</option></select></div>
+        <div class="field"><label for="junk_mode">Junk files</label>
+          <select id="junk_mode"><option value="delete">Delete</option><option value="move">Move to the move folder</option></select></div>
+      </div>
+      <div class="field" id="moveField"><label for="move_dir">Move folder</label>
+        <div class="row"><input type="text" id="move_dir" placeholder="/processed"><button class="small" id="browseMove">Browse</button></div>
+        <div class="hint">Must be outside the source folders. Files keep their folder layout under <span class="path">&lt;move folder&gt;/&lt;source folder name&gt;/...</span>; name clashes get a .1, .2 suffix.
+        Use the same kind of path as the sources (don't mix <span class="path">/mnt/user</span> and <span class="path">/mnt/diskN</span> mappings).</div></div>
+      <div class="field"><label for="junk_patterns">Junk file patterns</label><textarea id="junk_patterns" spellcheck="false"></textarea>
+        <div class="hint">One per line, matched on the file name, case-insensitive. Wildcards: <span class="path">*.diz</span> <span class="path">Thumbs.db</span> <span class="path">*sample*</span>. Checked in every folder that is scanned, not just files that came out of archives.</div></div>
+      <div class="field"><label for="exclude_dirs">Folders to skip</label><textarea id="exclude_dirs" spellcheck="false"></textarea>
+        <div class="hint">One per line, matched on the folder name. Wildcards allowed.</div></div>
+    </section>
+
+    <section class="card">
+      <h2>Permissions</h2>
+      <div class="check"><input type="checkbox" id="set_perms"><div><label for="set_perms">Set permissions on processed folders and files</label>
+        <div class="hint">Applied to every scanned folder, the files in it and its sub-folders, once the folder is finished.</div></div></div>
+      <div class="two">
+        <div class="field"><label for="file_mode">File mode</label><input type="text" class="mode" id="file_mode" maxlength="4"><div class="hint">666 = everybody read/write</div></div>
+        <div class="field"><label for="dir_mode">Folder mode</label><input type="text" class="mode" id="dir_mode" maxlength="4"><div class="hint">777 = everybody read/write/open</div></div>
+      </div>
+      <div class="check"><input type="checkbox" id="chown_enabled"><div><label for="chown_enabled">Also set the owner</label>
+        <div class="hint">Unraid's usual owner is nobody:users = 99:100.</div></div></div>
+      <div class="two">
+        <div class="field"><label for="uid">User ID</label><input type="number" class="num" id="uid" min="0"></div>
+        <div class="field"><label for="gid">Group ID</label><input type="number" class="num" id="gid" min="0"></div>
+      </div>
+    </section>
+
+    <div class="savebar">
+      <button class="primary" id="btnSave">Save settings</button>
+      <span id="saveMsg" class="muted small"></span>
+    </div>
+  </div>
+
+  <!-- HISTORY -->
+  <div id="tab-history" class="tab">
+    <section class="card" style="margin-top:0">
+      <h2>Previous scans</h2>
+      <div style="overflow-x:auto"><table>
+        <thead><tr><th>Started</th><th>Type</th><th>Result</th><th>Found</th><th>Extracted</th><th>Failed</th><th>Junk</th><th>Took</th></tr></thead>
+        <tbody id="hist"></tbody></table></div>
+    </section>
+  </div>
+</main>
+
+<dialog id="dlg">
+  <div class="dlg-h">Choose a folder</div>
+  <div class="dlg-b" id="dlgList"></div>
+  <div class="dlg-f"><span class="path" id="dlgPath">/</span>
+    <button id="dlgCancel">Cancel</button><button class="primary" id="dlgOk">Select this folder</button></div>
+</dialog>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+
+// small DOM helper: h("div", {class:"x"}, "text", child...) - text is never parsed as HTML
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k.startsWith("on")) el.addEventListener(k.slice(2), v); else el.setAttribute(k, v);
+  }
+  for (const k of kids.flat()) el.append(k instanceof Node ? k : document.createTextNode(k ?? ""));
+  return el;
+}
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  let data = {};
+  try { data = await r.json(); } catch (e) { /* not JSON */ }
+  if (r.status === 401 && data.login) { location.href = "/login"; throw new Error("Login required"); }
+  if (!r.ok) { const err = new Error(data.error || (data.errors || []).join("; ") || r.statusText); err.data = data; throw err; }
+  return data;
+}
+const post = (path, body) => api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+
+function ago(t) {
+  if (!t) return "never";
+  const s = Math.max(0, Math.round(Date.now() / 1000 - t));
+  if (s < 60) return s + "s ago"; if (s < 3600) return Math.round(s / 60) + " min ago";
+  if (s < 86400) return Math.round(s / 3600) + " h ago"; return Math.round(s / 86400) + " d ago";
+}
+function dur(s) {
+  s = Math.round(s); if (s < 60) return s + "s";
+  if (s < 3600) return Math.floor(s / 60) + "m " + (s % 60) + "s";
+  return Math.floor(s / 3600) + "h " + Math.floor(s % 3600 / 60) + "m";
+}
+const fmtTime = (t) => t ? new Date(t * 1000).toLocaleString() : "-";
+let serverSkew = 0;   // server clock - browser clock
+
+// ---------------------------------------------------------------- tabs
+document.querySelectorAll("nav button").forEach((b) => b.addEventListener("click", () => {
+  document.querySelectorAll("nav button").forEach((x) => x.classList.toggle("on", x === b));
+  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("on", t.id === "tab-" + b.dataset.tab));
+  if (b.dataset.tab === "history") loadHistory();
+}));
+
+let bannerTimer = null, connLost = false;
+function banner(kind, text, sticky) {
+  const el = $("banner"); el.replaceChildren(); clearTimeout(bannerTimer);
+  if (text) {
+    el.append(h("div", { class: "banner " + kind }, text));
+    if (!sticky) bannerTimer = setTimeout(() => el.replaceChildren(), 7000);
+  }
+}
+
+// ---------------------------------------------------------------- status
+let lastLog = 0, running = false;
+
+async function pollStatus() {
+  try {
+    const d = await api("/api/status");
+    serverSkew = d.now - Date.now() / 1000;
+    renderStatus(d);
+    if (connLost) { connLost = false; banner("", ""); }
+  } catch (e) { connLost = true; banner("bad", "Cannot reach the server: " + e.message, true); return; }
+  try {
+    const l = await api("/api/log?after=" + lastLog);
+    if (l.last < lastLog) { lastLog = 0; $("log").replaceChildren(); }
+    appendLog(l.entries); lastLog = l.last;
+  } catch (e) { /* next poll */ }
+}
+
+function renderStatus(d) {
+  const e = d.engine, s = d.schedule;
+  running = e.state !== "idle";
+  const pill = $("pill");
+  pill.textContent = e.state === "idle" ? "Idle" : e.state === "stopping" ? "Stopping..." : (e.dry_run ? "Dry run" : "Scanning");
+  pill.className = "pill" + (e.state === "running" ? " run" : e.state === "stopping" ? " stop" : "");
+  $("btnRun").disabled = $("btnDry").disabled = running;
+  $("btnStop").disabled = e.state !== "running";
+
+  // cards
+  const now = Date.now() / 1000 + serverSkew;
+  if (running) { $("next").textContent = "Scanning now"; $("nextSub").textContent = "started " + ago(e.started_at - serverSkew); }
+  else if (!s.enabled) { $("next").textContent = "Manual only"; $("nextSub").textContent = "automatic scans are off"; }
+  else if (s.next_run) {
+    const left = s.next_run - now;
+    $("next").textContent = left <= 1 ? "Starting..." : "in " + dur(left);
+    $("nextSub").textContent = new Date(s.next_run * 1000).toLocaleString();
+  } else { $("next").textContent = "-"; $("nextSub").textContent = "add a source folder to start"; }
+
+  if (e.finished_at && !running) {
+    const label = { completed: "Completed", stopped: "Stopped", error: "Failed" }[e.result] || e.result;
+    $("last").textContent = label + (e.dry_run ? " (dry run)" : "");
+    $("lastSub").textContent = ago(e.finished_at - serverSkew) + (e.message ? " - " + e.message : "");
+  } else if (!running) { $("last").textContent = "-"; $("lastSub").textContent = e.finished_at ? "" : "no scan since the container started"; }
+  $("curdir").textContent = e.current_dir || "-";
+  $("curpass").textContent = e.current_dir ? "nesting pass " + e.pass : "";
+
+  // progress
+  $("cDone").textContent = e.done; $("cFound").textContent = e.found; $("cLeft").textContent = e.remaining;
+  $("cExt").textContent = e.extracted; $("cFail").textContent = e.failed; $("cJunk").textContent = e.junk;
+  $("cDef").textContent = e.deferred;
+  $("barfill").style.width = (e.found ? Math.min(100, e.done / e.found * 100) : 0) + "%";
+
+  // threads
+  const tb = $("threads"); tb.replaceChildren();
+  if (!e.slots.length) tb.append(h("tr", {}, h("td", { colspan: 3, class: "idle" }, "Not running")));
+  for (const sl of e.slots) tb.append(h("tr", {},
+    h("td", { class: "n" }, "#" + sl.n),
+    h("td", { class: sl.path ? "path" : "idle" }, sl.path || "idle"),
+    h("td", { class: "t" }, sl.path ? dur(sl.elapsed) : "")));
+
+  // failures
+  $("failCard").hidden = !e.failures.length;
+  const fl = $("fails"); fl.replaceChildren();
+  for (const f of e.failures) fl.append(h("div", { class: "fail" }, h("div", { class: "path" }, f.path), h("div", { class: "err" }, f.error)));
+}
+
+function appendLog(entries) {
+  if (!entries.length) return;
+  const box = $("log");
+  const atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
+  for (const x of entries) {
+    const ts = new Date(x.t * 1000).toLocaleTimeString();
+    box.append(h("div", { class: x.level }, h("span", { class: "ts" }, ts + "  "), x.msg));
+  }
+  while (box.childNodes.length > 600) box.firstChild.remove();
+  if (atEnd) box.scrollTop = box.scrollHeight;
+}
+
+// ---------------------------------------------------------------- run buttons
+async function startRun(dry) {
+  try { await post("/api/run", { dry_run: dry }); pollStatus(); }
+  catch (e) { banner("bad", e.message); }
+}
+$("btnRun").addEventListener("click", () => startRun(false));
+$("btnDry").addEventListener("click", () => startRun(true));
+$("btnStop").addEventListener("click", async () => { await post("/api/stop"); pollStatus(); });
+$("btnLogout").addEventListener("click", () => { location.href = "/logout"; });
+
+// ---------------------------------------------------------------- settings
+let current = null;
+
+function sourceRow(value, exists) {
+  const input = h("input", { type: "text", placeholder: "/data/downloads" }); input.value = value || "";
+  const row = h("div", {}, h("div", { class: "row" }, input,
+    h("button", { class: "small", onclick: () => pickFolder(input.value || "/", (p) => { input.value = p; }) }, "Browse"),
+    h("button", { class: "small danger", onclick: () => row.remove() }, "Remove")));
+  if (exists === false) row.append(h("div", { class: "missing" }, "This folder does not exist inside the container - check the path mapping."));
+  return row;
+}
+
+async function loadSettings() {
+  const d = await api("/api/settings");
+  current = d.settings;
+  const s = d.settings;
+  const src = $("sources"); src.replaceChildren();
+  for (const p of s.sources) src.append(sourceRow(p, d.sources_exist[p]));
+  if (!s.sources.length) src.append(sourceRow(""));
+  for (const k of ["schedule_enabled", "run_on_start", "overwrite", "set_perms", "chown_enabled"]) $(k).checked = s[k];
+  for (const k of ["interval_minutes", "min_age_minutes", "max_passes", "file_mode", "dir_mode", "uid", "gid", "archive_mode", "junk_mode", "move_dir"]) $(k).value = s[k];
+  $("threads_in").value = s.threads;
+  $("junk_patterns").value = s.junk_patterns.join("\n");
+  $("exclude_dirs").value = s.exclude_dirs.join("\n");
+  syncMove();
+
+  $("btnLogout").hidden = !d.auth_enabled;
+  const warn = $("toolWarn"); warn.replaceChildren();
+  const t = d.tools, msgs = [];
+  if (!t.unzip && !t["7z"]) msgs.push("No ZIP extractor found - .zip files will fail.");
+  if (!t.unrar && !t["7z"]) msgs.push("No RAR extractor found - .rar files will fail.");
+  if (!t["7z"]) msgs.push("7-Zip is not installed - .7z files will fail.");
+  if (msgs.length) warn.append(h("div", { class: "banner warn" }, msgs.join(" ")));
+  if (!d.auth_enabled) warn.append(h("div", { class: "banner warn" }, "No password is set (UI_PASSWORD). Anyone who can reach this page can change settings and run scans."));
+}
+
+function syncMove() {
+  const need = $("archive_mode").value === "move" || $("junk_mode").value === "move";
+  $("moveField").style.display = need ? "" : "none";
+}
+$("archive_mode").addEventListener("change", syncMove);
+$("junk_mode").addEventListener("change", syncMove);
+$("addSource").addEventListener("click", () => $("sources").append(sourceRow("")));
+$("browseMove").addEventListener("click", () => pickFolder($("move_dir").value || "/", (p) => { $("move_dir").value = p; }));
+
+function collect() {
+  const num = (id) => parseInt($(id).value, 10);
+  return {
+    sources: [...$("sources").querySelectorAll("input")].map((i) => i.value.trim()).filter(Boolean),
+    schedule_enabled: $("schedule_enabled").checked, run_on_start: $("run_on_start").checked,
+    interval_minutes: num("interval_minutes"), threads: num("threads_in"),
+    min_age_minutes: num("min_age_minutes"), max_passes: num("max_passes"),
+    overwrite: $("overwrite").checked,
+    archive_mode: $("archive_mode").value, junk_mode: $("junk_mode").value, move_dir: $("move_dir").value.trim(),
+    junk_patterns: $("junk_patterns").value, exclude_dirs: $("exclude_dirs").value,
+    set_perms: $("set_perms").checked, file_mode: $("file_mode").value.trim(), dir_mode: $("dir_mode").value.trim(),
+    chown_enabled: $("chown_enabled").checked, uid: num("uid"), gid: num("gid"),
+  };
+}
+
+$("btnSave").addEventListener("click", async () => {
+  const err = $("settingsErr"); err.replaceChildren(); $("saveMsg").textContent = "";
+  try {
+    await post("/api/settings", collect());
+    $("saveMsg").textContent = running ? "Saved - applies from the next scan." : "Saved.";
+    await loadSettings();
+  } catch (e) {
+    const list = (e.data && e.data.errors) || [e.message];
+    err.append(h("div", { class: "banner bad" }, list.map((x) => h("div", {}, x))));
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+});
+
+// ---------------------------------------------------------------- folder picker
+let pickCb = null, pickPath = "/";
+async function browse(path) {
+  const d = await api("/api/browse?path=" + encodeURIComponent(path));
+  pickPath = d.path; $("dlgPath").textContent = d.path;
+  const list = $("dlgList"); list.replaceChildren();
+  if (d.parent) list.append(h("div", { onclick: () => browse(d.parent) }, ".. (up)"));
+  for (const n of d.dirs) list.append(h("div", { onclick: () => browse((d.path === "/" ? "" : d.path) + "/" + n) }, n + "/"));
+  if (d.error) list.append(h("div", { class: "missing" }, d.error));
+}
+function pickFolder(start, cb) { pickCb = cb; browse(start).catch(() => browse("/")); $("dlg").showModal(); }
+$("dlgCancel").addEventListener("click", () => $("dlg").close());
+$("dlgOk").addEventListener("click", () => { if (pickCb) pickCb(pickPath); $("dlg").close(); });
+
+// ---------------------------------------------------------------- history
+async function loadHistory() {
+  const d = await api("/api/history");
+  const tb = $("hist"); tb.replaceChildren();
+  if (!d.history.length) tb.append(h("tr", {}, h("td", { colspan: 8, class: "idle" }, "No scans yet")));
+  for (const r of d.history) {
+    const res = { completed: "Completed", stopped: "Stopped", error: "Failed" }[r.result] || r.result;
+    const row = h("tr", {},
+      h("td", {}, fmtTime(r.started_at)), h("td", {}, (r.dry_run ? "dry run, " : "") + r.trigger),
+      h("td", {}, res + (r.message ? " - " + r.message : "")),
+      h("td", {}, r.found), h("td", {}, r.extracted), h("td", {}, r.failed), h("td", {}, r.junk),
+      h("td", {}, dur(r.finished_at - r.started_at)));
+    tb.append(row);
+    if (r.failures && r.failures.length) {
+      tb.append(h("tr", {}, h("td", { colspan: 8 }, h("details", {}, h("summary", { class: "small" }, r.failures.length + " failed archive(s)"),
+        r.failures.map((f) => h("div", { class: "fail" }, h("div", { class: "path" }, f.path), h("div", { class: "err" }, f.error)))))));
+    }
+  }
+}
+
+// ---------------------------------------------------------------- go
+loadSettings().catch((e) => banner("bad", "Could not load settings: " + e.message));
+pollStatus();
+setInterval(pollStatus, 1000);
+</script>
+</body>
+</html>

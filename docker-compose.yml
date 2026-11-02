@@ -1,0 +1,22 @@
+services:
+  autoextract:
+    image: ghcr.io/rcodehub/autoextract:latest
+    build: .                       # or build it locally: docker compose build
+    container_name: autoextract
+    restart: unless-stopped
+    ports:
+      - "8844:8080"                # web UI
+    environment:
+      - TZ=America/New_York
+      # Optional login for the web UI (strongly recommended):
+      - UI_USERNAME=admin
+      - UI_PASSWORD=change-me
+      # The variables below only seed the settings the FIRST time the container starts.
+      # After that, use the Settings page in the web UI.
+      # - SOURCE_DIRS=/data/downloads
+      # - SCHEDULE_ENABLED=true
+      # - INTERVAL_MINUTES=60
+    volumes:
+      - /mnt/user/appdata/autoextract:/config     # settings, history, logs
+      - /mnt/user/downloads:/data/downloads            # a folder to scan (add as many as you like)
+      - /mnt/user/processed:/processed                 # optional: where processed archives are moved to
