@@ -54,8 +54,12 @@ def _env_int(name, default):
 
 
 def env_defaults():
-    """Template variables only seed the very first settings file; the settings page wins after that."""
+    """First-run settings. The mapped folders decide the paths; optional environment variables
+    (handy for docker-compose) can override them. After the first start the Settings page wins."""
     d = dict(DEFAULTS)
+    move = mounts.suggested_move_dir(CONFIG_DIR)
+    if move:                       # a processed folder was mapped: move things there by default
+        d.update(move_dir=move, archive_mode="move", junk_mode="move")
     if _env_list("SOURCE_DIRS"):
         d["sources"] = _env_list("SOURCE_DIRS")
     else:   # nothing specified: offer every folder that was mapped into the container

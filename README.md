@@ -46,7 +46,9 @@ Buttons: **Run now**, **Dry run** (shows what *would* happen, changes nothing - 
 | Folders to skip | Folder names to ignore (`@eaDir`, `.Recycle.Bin`, ...) |
 | Permissions | Set file mode (default 666) and folder mode (default 777) on every processed folder, its files and its sub-folders; optionally set the owner (Unraid: 99 / 100) |
 
-Settings are stored in `/config/settings.json`, edited from the page - you never have to touch the file. The template variables (`SOURCE_DIRS`, `INTERVAL_MINUTES`, ...) only **seed** the settings the very first time the container starts. Changes made while a scan is running apply from the next scan.
+Settings are stored in `/config/settings.json`, edited from the page - you never have to touch the file, and there are no settings variables in the Unraid template (only the timezone and the login). On the very first start the folders you mapped decide the defaults: every mapped folder except `/config` and `/processed` becomes a source, and if you mapped `/processed`, archives and junk files are moved there instead of deleted. Automatic scans start switched off until you enable them. Changes made while a scan is running apply from the next scan.
+
+(For docker-compose users, optional environment variables can override the first-start defaults: `SOURCE_DIRS`, `SCHEDULE_ENABLED`, `INTERVAL_MINUTES`, `THREADS`, `ARCHIVE_MODE`, `JUNK_MODE`, `MOVE_DIR`, `JUNK_PATTERNS`, `PUID`/`PGID`.)
 
 ## Login
 

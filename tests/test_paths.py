@@ -55,7 +55,8 @@ check("mapped folders are listed", {cfg, dl, proc, media} <= set(paths), paths)
 check("config folder is flagged", [m["path"] for m in ms if m["config"]] == [cfg])
 check("free space reported", all(m["free"] is not None for m in ms))
 
-sug = mounts.suggested_sources(cfg, skip=(proc,))
+mounts.PROCESSED_DIR = proc
+sug = mounts.suggested_sources(cfg)
 check("first-run suggestion = data folders only", sug == [media, dl] or sug == [dl, media] or set(sug) == {dl, media}, sug)
 
 pi = mounts.path_info(dl + "/sub/dir", ms)
@@ -75,11 +76,14 @@ check("separate folders are accepted", not e, e)
 
 # first-run seeding uses detected mounts when SOURCE_DIRS is not set
 # (in the real container the processed folder is /processed; here it is a temp path)
-mounts.suggested_sources.__defaults__ = ("/config", (proc,))
+mounts.PROCESSED_DIR = proc
 os.remove(os.path.join(cfg, "settings.json")) if os.path.exists(os.path.join(cfg, "settings.json")) else None
 seed = settings.load()
 check("first run: sources auto-detected (not /processed or /config)",
       proc not in seed["sources"] and cfg not in seed["sources"] and dl in seed["sources"], seed["sources"])
+check("first run: mapped processed folder becomes the move folder",
+      seed["move_dir"] == proc and seed["archive_mode"] == "move" and seed["junk_mode"] == "move", seed)
+check("first run: scheduling stays off", seed["schedule_enabled"] is False)
 
 # API
 c = main.app.test_client()

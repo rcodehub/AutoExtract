@@ -16,6 +16,7 @@ SKIP_FS = {
     "autofs", "binfmt_misc", "hugetlbfs", "rpc_pipefs", "selinuxfs",
 }
 SKIP_PREFIX = ("/proc", "/sys", "/dev", "/run", "/etc", "/app", "/usr", "/lib", "/bin", "/sbin", "/var/run")
+PROCESSED_DIR = "/processed"   # container path the template maps the optional "processed" folder to
 HOST_PATH_RE = re.compile(r"^/mnt/(user0?|disk\d+|cache\w*|remotes|disks|addons)(/|$)")
 
 
@@ -83,8 +84,16 @@ def path_info(path, mounts):
     return info
 
 
-def suggested_sources(config_dir="/config", skip=("/processed",)):
+def suggested_sources(config_dir="/config"):
     """First-run guess: every writable mapped folder except app data and the processed folder."""
-    skip = {os.path.normpath(s) for s in skip} | {os.path.normpath(config_dir)}
+    skip = {os.path.normpath(PROCESSED_DIR), os.path.normpath(config_dir)}
     return [m["path"] for m in list_mounts(config_dir)
             if os.path.normpath(m["path"]) not in skip and m["writable"]]
+
+
+def suggested_move_dir(config_dir="/config"):
+    """The processed folder, if the user mapped one (and it is writable); otherwise ''."""
+    for m in list_mounts(config_dir):
+        if os.path.normpath(m["path"]) == os.path.normpath(PROCESSED_DIR) and m["writable"]:
+            return m["path"]
+    return ""

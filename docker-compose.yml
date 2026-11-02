@@ -11,11 +11,6 @@ services:
       # Optional login for the web UI (strongly recommended):
       - UI_USERNAME=admin
       - UI_PASSWORD=change-me
-      # The variables below only seed the settings the FIRST time the container starts.
-      # After that, use the Settings page in the web UI.
-      # - SOURCE_DIRS=/data/downloads
-      # - SCHEDULE_ENABLED=true
-      # - INTERVAL_MINUTES=60
     volumes:
       - /mnt/user/appdata/autoextract:/config     # settings, history, logs
       - /mnt/user/downloads:/data/downloads            # a folder to scan (add as many as you like)
