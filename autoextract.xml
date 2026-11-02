@@ -4,6 +4,7 @@
   <Repository>ghcr.io/rcodehub/autoextract:latest</Repository>
   <Registry>https://ghcr.io/rcodehub/autoextract</Registry>
   <Network>bridge</Network>
+  <beta>True</beta>
   <MyIP/>
   <Shell>sh</Shell>
   <Privileged>false</Privileged>
