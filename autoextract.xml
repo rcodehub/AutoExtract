@@ -1,23 +1,24 @@
 <?xml version="1.0"?>
 <Container version="2">
-  <Name>autoextract</Name>
+  <Name>AutoExtract</Name>
   <Repository>ghcr.io/rcodehub/autoextract:latest</Repository>
-  <Registry>https://github.com/rcodehub/AutoExtract/pkgs/container/autoextract</Registry>
+  <Registry>https://ghcr.io/rcodehub/autoextract</Registry>
   <Network>bridge</Network>
   <MyIP/>
   <Shell>sh</Shell>
   <Privileged>false</Privileged>
   <Support>https://github.com/rcodehub/AutoExtract/issues</Support>
   <Project>https://github.com/rcodehub/AutoExtract</Project>
+  <ReadMe>https://github.com/rcodehub/AutoExtract/blob/main/README.md</ReadMe>
   <Overview>Scans your folders on a schedule and automatically extracts zip, rar, 7z and tar archives into the folder they are in, then extracts any archives found inside those, and cleans up (deletes or moves) the processed archives and junk files such as *.diz. Works one folder at a time, with parallel extraction inside a folder, a live status page, and a settings page for every option. Created entirely by AI (Claude). It has been tested, but not in every situation - do your own due diligence before relying on it with data you cannot replace, and before exposing it to the internet.</Overview>
-  <Category>Tools: Other:</Category>
+  <Category>Tools:Utilities</Category>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
-  <TemplateURL>https://raw.githubusercontent.com/rcodehub/Unraid-CA-Apps/main/autoextract.xml</TemplateURL>
-  <Icon/>
-  <ExtraParams/>
+  <TemplateURL>https://raw.githubusercontent.com/rcodehub/Unraid-CA-Apps/refs/heads/main/templates/autoextract.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/rcodehub/Unraid-CA-Apps/refs/heads/main/templates/autoextract.png</Icon>
+  <ExtraParams>--security-opt=no-new-privileges:true</ExtraParams>
   <PostArgs/>
   <CPUset/>
-  <DateInstalled/>
+  <Date>2026-11-02</Date>
   <DonateText/>
   <DonateLink/>
   <Requires/>
