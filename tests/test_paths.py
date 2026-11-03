@@ -3,6 +3,7 @@ import importlib
 import os
 import sys
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "app"))
@@ -158,6 +159,32 @@ check("log: has entries", c.get("/api/log?after=0").get_json()["entries"])
 r = c.post("/api/log/clear", json={})
 d = c.get("/api/log?after=0").get_json()
 check("log: cleared", r.status_code == 200 and not d["entries"] and d["cleared"] == d["last"], d)
+
+# --- scheduler: a scan that finishes between two ticks must not start the next one at once
+empty = os.path.join(root, "empty-src")
+os.makedirs(os.path.join(empty, "leftover-folder"))
+r = c.post("/api/settings", json={"sources": [empty], "schedule_enabled": True, "interval_minutes": 5,
+                                   "run_on_start": False})
+check("scheduler: settings saved", r.status_code == 200, r.get_data(as_text=True))
+sch = main.Scheduler()
+sch.started = time.time() - 3600             # container has been up longer than the interval
+runs_before = len(main.engine.history)
+sch.tick()                                   # overdue: first scan starts
+if main.engine.thread:
+    main.engine.thread.join(10)
+for _ in range(5):                           # the scan finished between ticks
+    sch.tick()
+    time.sleep(0.05)
+if main.engine.thread:
+    main.engine.thread.join(10)
+check("scheduler: no scan loop", len(main.engine.history) - runs_before == 1, len(main.engine.history) - runs_before)
+check("scheduler: next scan one interval after the last one ended",
+      abs(sch.next_run - (main.engine.status["finished_at"] + 300)) < 2, (sch.next_run, main.engine.status["finished_at"]))
+main.engine.start(settings.load(), trigger="manual")   # a manual scan also resets the interval
+main.engine.thread.join(10)
+sch.tick()
+check("scheduler: manual scan counts as the last scan", abs(sch.next_run - (main.engine.status["finished_at"] + 300)) < 2)
+c.post("/api/settings", json={"sources": [dl], "schedule_enabled": False})
 
 print("\nALL PASSED" if not FAILS else f"\nFAILED: {FAILS}")
 sys.exit(1 if FAILS else 0)

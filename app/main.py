@@ -121,9 +121,8 @@ class Scheduler(threading.Thread):
     def __init__(self):
         super().__init__(daemon=True)
         self.started = time.time()
-        self.last_end = None
+        self.last_start = None
         self.next_run = None
-        self._was_running = False
         self._start_run_done = False
 
     def run(self):
@@ -136,23 +135,24 @@ class Scheduler(threading.Thread):
 
     def tick(self):
         if engine.running:
-            self._was_running = True
             self.next_run = None
             return
-        if self._was_running:
-            self._was_running = False
-            self.last_end = time.time()
         cfg = settings.load()
         if not cfg["schedule_enabled"] or not cfg["sources"]:
             self.next_run = None
             return
-        if cfg["run_on_start"] and not self._start_run_done and self.last_end is None:
+        # The interval counts from the end of the last scan (scheduled or manual). Take that time
+        # from the engine itself: a scan of empty folders can start and finish between two ticks,
+        # so watching for "running" would miss it and start the next scan at once (a scan loop).
+        finished = engine.status.get("finished_at") or 0
+        last = max(self.started, finished, self.last_start or 0)
+        if cfg["run_on_start"] and not self._start_run_done and not finished:
             self.next_run = self.started
         else:
-            base = self.last_end or self.started
-            self.next_run = base + cfg["interval_minutes"] * 60
+            self.next_run = last + cfg["interval_minutes"] * 60
         if time.time() >= self.next_run:
             self._start_run_done = True
+            self.last_start = time.time()
             engine.start(cfg, trigger="schedule")
 
 
