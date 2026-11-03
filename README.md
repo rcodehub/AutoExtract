@@ -25,8 +25,8 @@ Multi-part archives are extracted once from the first part, and all parts are cl
 
 | Tab | What you get |
 |---|---|
-| **Status** | Next scan countdown, last result, current folder, progress (done / found / remaining / failed), what each thread is working on right now, failed archives, live log |
-| **Settings** | Every option below, with a folder picker |
+| **Status** | Next scan countdown, last result, current folder, progress (done / found / remaining / failed), what each thread is working on right now, failed archives, live log (stays scrolled to the newest line; *Clear log* empties the view - the log file in `/data/logs` is kept) |
+| **Settings** | Every option below, with a folder picker (hidden folders included), and the folders on your server behind `/downloads`, `/trash` and `/data` |
 | **History** | Past scans with counts and failures |
 
 Buttons: **Run now**, **Dry run** (shows what *would* happen, changes nothing - nested archives only show up in a real run), **Stop**.

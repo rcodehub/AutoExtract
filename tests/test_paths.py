@@ -133,5 +133,31 @@ res, errs = S.save({"sources": [dl]})
 check("save failure is reported", res is None and errs and "Could not store" in errs[0], errs)
 S.SETTINGS_PATH, S.CONFIG_DIR = real, cfg
 
+# --- server (host) paths behind each mapping
+check("host: user share", mounts.host_path("fuse.shfs", "shfs", "/downloads") == "/mnt/user/downloads")
+check("host: array disk", mounts.host_path("xfs", "/dev/md1p1", "/trash") == "/mnt/disk1/trash")
+check("host: zfs dataset", mounts.host_path("zfs", "cache/appdata", "/autoextract") == "/mnt/cache/appdata/autoextract")
+check("host: unknown pool", mounts.host_path("btrfs", "/dev/nvme0n1p1", "/appdata") is None)
+ms2 = mounts.list_mounts(cfg)
+dlm = [m for m in ms2 if m["path"] == dl][0]
+check("host: shown for a mapped folder", dlm["host"] == "/mnt/user/somewhere", dlm)
+pi = mounts.path_info(dl + "/sub", ms2)
+check("host: path inside a mapping", pi["host"] == "/mnt/user/somewhere/sub", pi)
+
+# --- hidden folders are listed in the folder picker
+os.makedirs(os.path.join(dl, ".hidden"), exist_ok=True)
+os.makedirs(os.path.join(dl, ".autoextract-tmp1"), exist_ok=True)
+os.makedirs(os.path.join(dl, "Visible"), exist_ok=True)
+d = c.get("/api/browse?path=" + dl).get_json()
+check("browse: hidden folders listed, work folders not", ".hidden" in d["dirs"] and "Visible" in d["dirs"]
+      and not any(x.startswith(".autoextract-") for x in d["dirs"]), d)
+
+# --- clear the on-screen log
+main.engine.log("info", "something")
+check("log: has entries", c.get("/api/log?after=0").get_json()["entries"])
+r = c.post("/api/log/clear", json={})
+d = c.get("/api/log?after=0").get_json()
+check("log: cleared", r.status_code == 200 and not d["entries"] and d["cleared"] == d["last"], d)
+
 print("\nALL PASSED" if not FAILS else f"\nFAILED: {FAILS}")
 sys.exit(1 if FAILS else 0)

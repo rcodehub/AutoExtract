@@ -187,7 +187,13 @@ def api_status():
 def api_log():
     after = request.args.get("after", 0, type=int)
     entries = engine.log_since(after)
-    return jsonify(entries=entries, last=engine.log_seq)
+    return jsonify(entries=entries, last=engine.log_seq, cleared=engine.log_cleared)
+
+
+@app.route("/api/log/clear", methods=["POST"])
+def api_log_clear():
+    engine.clear_log()
+    return jsonify(ok=True)
 
 
 @app.route("/api/settings", methods=["GET", "POST"])
@@ -255,8 +261,10 @@ def api_browse():
     if not os.path.isabs(path):
         path = "/"
     try:
-        dirs = sorted(e.name for e in os.scandir(path)
-                      if e.is_dir(follow_symlinks=False))[:1000]
+        # hidden folders (.name) are listed too; only AutoExtract's own work folders are left out
+        dirs = sorted((e.name for e in os.scandir(path)
+                       if e.is_dir() and not e.name.startswith(".autoextract-")),
+                      key=lambda n: (n.lstrip(".").lower(), n))[:2000]
     except OSError as e:
         return jsonify(path=path, parent=os.path.dirname(path), dirs=[], error=str(e))
     return jsonify(path=path, parent=os.path.dirname(path) if path != "/" else None, dirs=dirs)

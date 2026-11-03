@@ -91,6 +91,7 @@ class Engine:
 
         self.log_buf = deque(maxlen=2000)
         self.log_seq = 0
+        self.log_cleared = 0
         self._file_log = None
         try:
             os.makedirs(log_dir, exist_ok=True)
@@ -122,6 +123,12 @@ class Engine:
         if self._file_log:
             getattr(self._file_log, "warning" if level == "warn" else
                     "error" if level == "error" else "info")(msg)
+
+    def clear_log(self):
+        """Empty the on-screen log (the log file in /data/logs is kept)."""
+        with self.lock:
+            self.log_buf.clear()
+            self.log_cleared = self.log_seq
 
     def log_since(self, after=0, limit=400):
         with self.lock:

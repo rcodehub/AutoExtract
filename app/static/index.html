@@ -67,6 +67,11 @@ td.n { width: 70px; white-space: nowrap; } td.t { width: 80px; white-space: nowr
 .idle { color: var(--muted); }
 .log { background: #0d1117; color: #d0d7de; font: 12.5px/1.5 var(--mono); border-radius: 8px;
   padding: 10px 12px; height: 300px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+.loghead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.loghead h2 { margin: 0; margin-right: auto; }
+.loghead label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.hostpaths { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 4px 0 12px; font-size: 14px; }
+.hostpaths .na { color: var(--muted); font-style: italic; }
 .log .warn { color: #fbbf24; } .log .error { color: #f87171; } .log .ts { color: #6e7b8a; }
 .banner { padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; font-size: 14px; }
 .banner.warn { background: var(--warn-soft); color: var(--warn); }
@@ -171,7 +176,9 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
     </section>
 
     <section class="card">
-      <h2>Log</h2>
+      <div class="loghead"><h2>Log</h2>
+        <label class="small muted"><input type="checkbox" id="logFollow" checked> Keep scrolled to the newest</label>
+        <button class="small" id="btnClearLog" title="Empties this view. The log file in /data/logs is kept.">Clear log</button></div>
       <div id="log" class="log"></div>
     </section>
   </div>
@@ -313,6 +320,7 @@ function dur(s) {
   return Math.floor(s / 3600) + "h " + Math.floor(s % 3600 / 60) + "m";
 }
 const fmtTime = (t) => t ? new Date(t * 1000).toLocaleString() : "-";
+let logCleared = 0;
 let serverSkew = 0;   // server clock - browser clock
 
 // ---------------------------------------------------------------- tabs
@@ -343,7 +351,7 @@ async function pollStatus() {
   } catch (e) { connLost = true; banner("bad", "Cannot reach the server: " + e.message, true); return; }
   try {
     const l = await api("/api/log?after=" + lastLog);
-    if (l.last < lastLog) { lastLog = 0; $("log").replaceChildren(); }
+    if (l.last < lastLog || l.cleared > logCleared) { logCleared = l.cleared; $("log").replaceChildren(); if (l.last < lastLog) lastLog = 0; }
     appendLog(l.entries); lastLog = l.last;
   } catch (e) { /* next poll */ }
 }
@@ -398,7 +406,7 @@ function renderStatus(d) {
 function appendLog(entries) {
   if (!entries.length) return;
   const box = $("log");
-  const atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
+  const atEnd = $("logFollow").checked || box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
   for (const x of entries) {
     const ts = new Date(x.t * 1000).toLocaleTimeString();
     box.append(h("div", { class: x.level }, h("span", { class: "ts" }, ts + "  "), x.msg));
@@ -406,6 +414,16 @@ function appendLog(entries) {
   while (box.childNodes.length > 600) box.firstChild.remove();
   if (atEnd) box.scrollTop = box.scrollHeight;
 }
+
+$("logFollow").addEventListener("change", () => {
+  try { localStorage.setItem("ae.logFollow", $("logFollow").checked ? "1" : "0"); } catch (e) { /* ignore */ }
+  if ($("logFollow").checked) $("log").scrollTop = $("log").scrollHeight;
+});
+try { if (localStorage.getItem("ae.logFollow") === "0") $("logFollow").checked = false; } catch (e) { /* ignore */ }
+$("btnClearLog").addEventListener("click", async () => {
+  await post("/api/log/clear");
+  $("log").replaceChildren();
+});
 
 // ---------------------------------------------------------------- run buttons
 async function startRun(dry) {
@@ -427,7 +445,7 @@ function statusLine(info) {
       ? "This looks like a path on your Unraid server, not inside the container. Use the container path of your mapping instead - see the list of mapped folders below."
       : "This folder does not exist inside the container. Choose one of the mapped folders below, or fix the path mapping in the Unraid container settings.");
   }
-  const where = info.mount ? " (inside " + info.mount + ")" : "";
+  const where = (info.mount ? " (inside " + info.mount + ")" : "") + (info.host ? " - on the server: " + info.host : "");
   if (!info.readable) return h("div", { class: "missing" }, "The container cannot read this folder" + where + ".");
   if (!info.writable) return h("div", { class: "warnline" }, "Read-only" + where + ": archives can be read but not extracted or removed here. Set the mapping to Read/Write.");
   return h("div", { class: "okline" }, "OK - readable and writable" + where);
@@ -484,6 +502,17 @@ async function loadMounts() {
   mountList = d.mounts;
   const box = $("mountsBox"); box.replaceChildren();
   const data = d.mounts.filter((m) => !m.config);
+  box.append(h("h3", {}, "Template paths on your server"));
+  const hp = h("div", { class: "hostpaths" });
+  const byPath = Object.fromEntries(d.mounts.map((m) => [m.path, m]));
+  for (const [cp, label] of [["/downloads", "Folder to scan"], ["/trash", "Trash folder"], [d.config_dir, "App data"]]) {
+    const m = byPath[cp];
+    const val = !m ? h("span", { class: "na" }, "not mapped")
+      : m.host ? h("span", { class: "path" }, m.host)
+      : h("span", { class: "muted" }, "device " + m.device + (m.root && m.root !== "/" ? ", folder " + m.root : "") + " (pool path not detectable)");
+    hp.append(h("span", {}, h("span", { class: "path" }, cp), " ", h("span", { class: "muted small" }, label)), val);
+  }
+  box.append(hp);
   box.append(h("h3", {}, "Folders mapped into this container"));
   if (!data.length) {
     box.append(h("div", { class: "banner warn" }, "No data folders are mapped into this container yet. In Unraid: Docker tab -> AutoExtract -> Edit, set the Host Path of \"Folder to scan\" to the share you want scanned (the Container Path should be /downloads), press Apply, then reload this page."));
@@ -493,6 +522,7 @@ async function loadMounts() {
   for (const m of data) {
     box.append(h("div", { class: "mrow" },
       h("span", { class: "path" }, m.path),
+      m.host ? h("span", { class: "muted small", title: "Folder on your server" }, "= " + m.host) : "",
       h("span", { class: "muted small" }, [fmtBytes(m.free) && fmtBytes(m.free) + " free", m.fstype].filter(Boolean).join(" - ")),
       m.writable ? "" : h("span", { class: "badge" }, "read-only"),
       h("button", { class: "small", onclick: () => addSource(m.path) }, "Add as source"),
