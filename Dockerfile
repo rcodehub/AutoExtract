@@ -11,11 +11,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ /app/
 
-ENV CONFIG_DIR=/config \
+ENV DATA_DIR=/data \
     PORT=8080 \
     PYTHONUNBUFFERED=1
 
-VOLUME /config
+VOLUME /data
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \

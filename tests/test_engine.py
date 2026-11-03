@@ -142,13 +142,17 @@ def test_min_age():
     os.makedirs(src)
     make_zip(f"{src}/new.zip", {"n.txt": "n"})
     old = f"{src}/old.zip"
-    make_zip(old, {"o.txt": "o"})
+    inner = os.path.join(work, "inner.zip")
+    make_zip(inner, {"deep.txt": "d"})       # nested archive with a brand-new timestamp inside
+    make_zip(old, {"o.txt": "o", "inner.zip": ("file", inner)})
     past = time.time() - 3600
     os.utime(old, (past, past))
     s = run(eng, base_cfg(sources=[src], min_age_minutes=10))
     t = tree(src)
     check("min age: old extracted, new skipped", "o.txt" in t and "new.zip" in t and "n.txt" not in t, t)
     check("min age: deferred counted", s["deferred"] == 1, s)
+    check("min age: nested archive with a recent date is still extracted",
+          "deep.txt" in t and "inner.zip" not in t, t)
     shutil.rmtree(work)
 
 

@@ -18,7 +18,7 @@ def check(name, cond, extra=""):
 def load_app(**env):
     for k in ("UI_USERNAME", "UI_PASSWORD"):
         os.environ.pop(k, None)
-    os.environ.update(env, NO_SCHEDULER="1", CONFIG_DIR=tempfile.mkdtemp(prefix="ea-auth-"))
+    os.environ.update(env, NO_SCHEDULER="1", DATA_DIR=tempfile.mkdtemp(prefix="ea-auth-"))
     for m in ("settings", "engine", "main"):
         sys.modules.pop(m, None)
     return importlib.import_module("main")

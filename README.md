@@ -46,7 +46,7 @@ Buttons: **Run now**, **Dry run** (shows what *would* happen, changes nothing - 
 | Folders to skip | Folder names to ignore (`@eaDir`, `.Recycle.Bin`, ...) |
 | Permissions | Set file mode (default 666) and folder mode (default 777) on every processed folder, its files and its sub-folders; optionally set the owner (Unraid: 99 / 100) |
 
-Settings are stored in `/config/settings.json`, edited from the page - you never have to touch the file, and there are no settings variables in the Unraid template (only the timezone and the login). On the very first start the folders you mapped decide the defaults: every mapped folder except `/config` and `/processed` becomes a source, and if you mapped `/processed`, archives and junk files are moved there instead of deleted. Automatic scans start switched off until you enable them. Changes made while a scan is running apply from the next scan. The bottom of the Settings page shows where the file is and when it was last saved; a red banner appears if `/config` is not mapped to a real folder (then settings vanish whenever the container is recreated), and a yellow one lists any saved value that was invalid - the other values are kept.
+Settings are stored in `/data/settings.json`, edited from the page - you never have to touch the file, and there are no settings variables in the Unraid template (only the timezone and the login). The settings file is created the moment the container first starts, from the template: `/downloads` becomes the folder to scan, and if you mapped `/trash`, archives and junk files are moved there instead of deleted. Everything is ready to use straight away. Automatic scans start switched off until you enable them. Changes made while a scan is running apply from the next scan. The bottom of the Settings page shows where the file is and when it was last saved; a red banner appears if `/data` is not mapped to a real folder (then settings vanish whenever the container is recreated), and a yellow one lists any saved value that was invalid - the other values are kept.
 
 (For docker-compose users, optional environment variables can override the first-start defaults: `SOURCE_DIRS`, `SCHEDULE_ENABLED`, `INTERVAL_MINUTES`, `THREADS`, `ARCHIVE_MODE`, `JUNK_MODE`, `MOVE_DIR`, `JUNK_PATTERNS`, `PUID`/`PGID`.)
 
@@ -54,7 +54,7 @@ Settings are stored in `/config/settings.json`, edited from the page - you never
 
 Set **UI password** (`UI_PASSWORD`) in the template and the web UI shows a sign-in page. The username is **UI username** (`UI_USERNAME`, default `admin`; not case-sensitive; blank also means `admin`). Sessions last 30 days and survive restarts; there is a *Log out* button, and 8 wrong attempts from one address in 5 minutes locks it out for a few minutes. Failed and blocked sign-ins are written to the container log (`docker logs autoextract`) so you can see what is being tried. HTTP basic auth is also accepted, for scripts. With no password set, the UI is open to anyone who can reach it.
 
-If you change the password in the template, just restart the container - old sessions stay valid until they expire or you log out, so for a forced sign-out delete `/config/secret.key` and restart.
+If you change the password in the template, just restart the container - old sessions stay valid until they expire or you log out, so for a forced sign-out delete `/data/secret.key` and restart.
 
 ## Install on Unraid
 
@@ -74,25 +74,27 @@ docker build -t autoextract:latest .
 Copy `autoextract.xml` to `/boot/config/plugins/dockerMan/templates-user/`, then **Docker -> Add Container -> Template: autoextract**. If you built locally, change *Repository* to `autoextract:latest`.
 
 Map:
-* **App data** `/config` -> `/mnt/user/appdata/autoextract`
-* **Folder to scan** -> your downloads share, e.g. `/mnt/user/downloads` -> `/data/downloads` (add more paths for more folders)
-* **Processed folder** (only if you want to *move* archives instead of deleting them) -> e.g. `/mnt/user/processed` -> `/processed`
+* **App data** -> `/mnt/user/appdata/autoextract` (container path `/data`)
+* **Folder to scan** -> your downloads share, e.g. `/mnt/user/downloads` (container path `/downloads`)
+* **Trash folder** (only if you want to *move* archives instead of deleting them) -> e.g. `/mnt/user/trash` (container path `/trash`)
 * **UI password** - set one.
 
-Open the web UI, go to **Settings**, add `/data/downloads` as a source, choose your options, save, and try **Dry run**.
+Open the web UI. `/downloads` is already set as the folder to scan; check the options on **Settings**, and try **Dry run**.
+
+**Upgrading from an older version:** the container paths changed to `/data`, `/downloads` and `/trash`. Edit the container and set those Container Paths (or remove the container and add it again from the template).
 
 ### Docker Compose
 See `docker-compose.yml`.
 
 ## Paths: host path vs container path
 
-Docker maps a folder on your server (the **host path**, e.g. `/mnt/user/downloads`) to a folder inside the container (the **container path**, e.g. `/data/downloads`). AutoExtract can only see container paths, so **everything on the Settings page uses container paths** - never the `/mnt/user/...` path.
+Docker maps a folder on your server (the **host path**, e.g. `/mnt/user/downloads`) to a folder inside the container (the **container path**, e.g. `/downloads`). AutoExtract can only see container paths, so **everything on the Settings page uses container paths** - never the `/mnt/user/...` path.
 
-* In the Unraid container settings, **Folder to scan** has a *Host Path* (your share) and a *Container Path* (leave `/data/downloads`, or choose your own). Add more with *Add another Path*.
+* The template uses three fixed container paths: `/data` (app data), `/downloads` (folder to scan) and `/trash` (optional move folder). Only change the *Host Path* side. You can map more folders with *Add another Path* and add them as sources; any folder inside the container can be used.
 * On the Settings page, the list **Folders mapped into this container** shows exactly what the container can see, with free space and read/write status. Use *Add as source* / *Use as move folder* there, or the **Browse** button.
 * Under each folder you type, the page checks it right away: it tells you if the folder doesn't exist inside the container, if it looks like a host path, or if it is read-only.
-* On the very first start, if you don't set `SOURCE_DIRS`, every mapped folder except `/config` and `/processed` is added as a source automatically.
-* The **Processed folder** needs its own mapping (e.g. `/mnt/user/processed` -> `/processed`). It must not be inside a scanned folder, and a scanned folder must not be inside it - the page refuses both.
+* On the very first start `/downloads` is set as the folder to scan (if it isn't mapped, any other mapped folder is used instead).
+* The **Trash folder** needs its own mapping (e.g. `/mnt/user/trash` -> `/trash`). It must not be inside a scanned folder, and a scanned folder must not be inside it - the page refuses both.
 * After changing a mapping in Unraid (Edit -> Apply), reload the page so the list updates.
 
 ## Things worth knowing
@@ -113,7 +115,7 @@ pip install -r requirements.txt
 python3 -I tests/test_engine.py            # engine tests (needs unzip + tar)
 python3 -I tests/test_auth.py              # login tests
 python3 -I tests/test_paths.py             # mapped-folder / path tests
-CONFIG_DIR=/tmp/cfg PORT=8080 python3 app/main.py   # run the web app locally
+DATA_DIR=/tmp/data DOWNLOADS_DIR=/tmp/downloads PORT=8080 python3 app/main.py   # run the web app locally
 ```
 
 Layout: `app/engine.py` (extraction), `app/settings.py` (options + validation), `app/main.py` (web app + scheduler), `app/static/index.html` (UI).

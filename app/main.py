@@ -26,7 +26,7 @@ AUTH_ON = bool(UI_PASS)
 
 
 def _secret_key():
-    """Session signing key, kept in /config so logins survive a restart."""
+    """Session signing key, kept in the app data folder so logins survive a restart."""
     path = os.path.join(CONFIG_DIR, "secret.key")
     try:
         with open(path) as f:
@@ -263,7 +263,7 @@ def api_browse():
 
 
 _cfg, _problems, _src = settings.load_with_report()
-if _src == "defaults":          # first start: write the settings file now so it always exists in /config
+if _src == "defaults":          # first start: write the settings file now so it always exists in the app data folder
     _saved, _errs = settings.save(_cfg)
     if _saved is None:
         print(f"[settings] could not create the settings file: {'; '.join(_errs)}", flush=True)

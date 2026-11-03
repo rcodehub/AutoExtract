@@ -6,7 +6,8 @@ import threading
 
 import mounts
 
-CONFIG_DIR = os.environ.get("CONFIG_DIR", "/config")
+# App data: settings.json, history, logs and the login key. Mapped to e.g. /mnt/user/appdata/autoextract.
+CONFIG_DIR = os.environ.get("DATA_DIR") or os.environ.get("CONFIG_DIR") or "/data"
 SETTINGS_PATH = os.path.join(CONFIG_DIR, "settings.json")
 
 DEFAULTS = {
@@ -127,6 +128,8 @@ def validate(data):
     for p in s["sources"]:
         if not p.startswith("/"):
             errors.append(f"Source folder must be an absolute path: {p}")
+        elif _within(p, CONFIG_DIR):
+            errors.append(f"Source folder {p} is the app data folder - choose a folder to scan such as /downloads")
 
     for k in ("schedule_enabled", "run_on_start", "overwrite", "set_perms", "chown_enabled"):
         boolean(k)

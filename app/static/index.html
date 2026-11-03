@@ -225,7 +225,7 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
           <select id="junk_mode"><option value="delete">Delete</option><option value="move">Move to the move folder</option></select></div>
       </div>
       <div class="field" id="moveField"><label for="move_dir">Move folder</label>
-        <div class="row"><input type="text" id="move_dir" placeholder="/processed"><button class="small" id="browseMove">Browse</button></div>
+        <div class="row"><input type="text" id="move_dir" placeholder="/trash"><button class="small" id="browseMove">Browse</button></div>
         <div id="moveStatus"></div>
         <div class="hint">Must be outside the source folders. Files keep their folder layout under <span class="path">&lt;move folder&gt;/&lt;source folder name&gt;/...</span>; name clashes get a .1, .2 suffix.
         Use the same kind of path as the sources (don't mix <span class="path">/mnt/user</span> and <span class="path">/mnt/diskN</span> mappings).</div></div>
@@ -456,7 +456,7 @@ function bindCheck(input, holder) {
 }
 
 function sourceRow(value, info) {
-  const input = h("input", { type: "text", placeholder: "/data/downloads" }); input.value = value || "";
+  const input = h("input", { type: "text", placeholder: "/downloads" }); input.value = value || "";
   const status = h("div", {});
   const row = h("div", { class: "src" }, h("div", { class: "row" }, input,
     h("button", { class: "small", onclick: () => pickFolder(input.value || "/", (p) => { input.value = p; input.dispatchEvent(new Event("change")); }) }, "Browse"),
@@ -486,7 +486,7 @@ async function loadMounts() {
   const data = d.mounts.filter((m) => !m.config);
   box.append(h("h3", {}, "Folders mapped into this container"));
   if (!data.length) {
-    box.append(h("div", { class: "banner warn" }, "No data folders are mapped into this container yet. In Unraid: Docker tab -> AutoExtract -> Edit, set the Host Path of \"Folder to scan\" to the share you want scanned (the Container Path can stay /data/downloads), press Apply, then reload this page."));
+    box.append(h("div", { class: "banner warn" }, "No data folders are mapped into this container yet. In Unraid: Docker tab -> AutoExtract -> Edit, set the Host Path of \"Folder to scan\" to the share you want scanned (the Container Path should be /downloads), press Apply, then reload this page."));
     return;
   }
   box.append(h("div", { class: "hint", style: "margin-bottom:6px" }, "These are the container paths to use here. Everything you mapped in the Unraid template shows up in this list."));
@@ -522,7 +522,7 @@ async function loadSettings() {
   $("btnLogout").hidden = !d.auth_enabled;
   const sw = $("storeWarn"); sw.replaceChildren();
   const st = d.storage;
-  if (!st.config_mapped) sw.append(h("div", { class: "banner bad" }, "The App data folder (/config) is not mapped to a folder on your server, so settings are lost every time the container is recreated (for example when you press Apply in Unraid). Edit the container and map App data to e.g. /mnt/user/appdata/autoextract."));
+  if (!st.config_mapped) sw.append(h("div", { class: "banner bad" }, "The App data folder (/data) is not mapped to a folder on your server, so settings are lost every time the container is recreated (for example when you press Apply in Unraid). Edit the container and map App data to e.g. /mnt/user/appdata/autoextract."));
   if (d.problems.length) sw.append(h("div", { class: "banner warn" }, "Some saved values were invalid and were replaced by their defaults - check and save again: " + d.problems.join(" | ")));
   $("storeInfo").textContent = st.source === "file"
     ? "Settings file: " + st.path + " - last saved " + new Date(st.saved_at * 1000).toLocaleString()

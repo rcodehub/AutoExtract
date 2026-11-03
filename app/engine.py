@@ -78,6 +78,7 @@ class Engine:
         self.failures = []
         self.failed_paths = set()
         self.deferred = set()        # archives skipped because they are too recent
+        self.nested = set()          # archives that came out of an archive in this run (never too recent)
         self._slots = []
 
     # ------------------------------------------------------------ logging
@@ -167,6 +168,7 @@ class Engine:
             self.failures = []
             self.failed_paths = set()
             self.deferred = set()
+            self.nested = set()
             self._slots = [None] * cfg["threads"]
             self.thread.start()
             return True
@@ -279,13 +281,32 @@ class Engine:
 
     def _eligible(self, path, cfg):
         age = cfg["min_age_minutes"]
-        if age <= 0:
+        if age <= 0 or path in self.nested:   # the age rule is for downloads, not extracted files
             return True
         ok = (time.time() - self._group_mtime(path)) >= age * 60
         if not ok:
             with self.lock:
                 self.deferred.add(path)
         return ok
+
+    def _mark_nested(self, d, t0, cfg):
+        """Archives created by the extraction just done. Their modification time comes from inside
+        the archive and may look recent, but they are complete, so the age rule must not skip them.
+        A file's ctime is the moment it was written here, so ctime >= t0 means "just extracted"."""
+        for dirpath, dirnames, filenames in os.walk(d):
+            dirnames[:] = [x for x in dirnames if not self._excluded(x, cfg)
+                           and not os.path.islink(os.path.join(dirpath, x))]
+            for fn in filenames:
+                if is_archive(fn):
+                    p = os.path.join(dirpath, fn)
+                    if p in self.deferred:      # was already there (a recent download), not extracted
+                        continue
+                    try:
+                        if os.stat(p).st_ctime >= t0:
+                            with self.lock:
+                                self.nested.add(p)
+                    except OSError:
+                        pass
 
     def _register(self, path):
         with self.lock:
@@ -340,8 +361,11 @@ class Engine:
                     act = f"move to {cfg['move_dir']}" if cfg["archive_mode"] == "move" else "delete"
                     self.log("info", f"[dry run] would extract, then {act}: {a}")
             else:
+                t0 = time.time() - 1   # file timestamps use a coarser clock that can lag slightly
                 futures = [pool.submit(self._work, a, root, cfg) for a in todo]
                 did = sum(1 for f in futures if f.result())
+                if did:
+                    self._mark_nested(d, t0, cfg)
             self._clean_junk(d, root, cfg)
             if dry or did == 0:          # nothing new came out -> directory is finished
                 break

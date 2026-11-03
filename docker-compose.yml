@@ -12,6 +12,6 @@ services:
       - UI_USERNAME=admin
       - UI_PASSWORD=change-me
     volumes:
-      - /mnt/user/appdata/autoextract:/config     # settings, history, logs
-      - /mnt/user/downloads:/data/downloads            # a folder to scan (add as many as you like)
-      - /mnt/user/processed:/processed                 # optional: where processed archives are moved to
+      - /mnt/user/appdata/autoextract:/data       # settings, history, logs
+      - /mnt/user/downloads:/downloads                  # the folder to scan
+      - /mnt/user/trash:/trash                          # optional: processed archives/junk are moved here
