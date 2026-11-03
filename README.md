@@ -73,7 +73,16 @@ docker build -t autoextract:latest .
 **Or publish it from GitHub:** push this repo to GitHub - `.github/workflows/docker.yml` runs the tests and publishes `ghcr.io/<owner>/autoextract` (and Docker Hub too if you add the `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` repository secrets).
 
 ### 2. Add the container
-Copy `autoextract.xml` to `/boot/config/plugins/dockerMan/templates-user/`, then **Docker -> Add Container -> Template: autoextract**. If you built locally, change *Repository* to `autoextract:latest`.
+Install it from the **Apps** tab (Community Applications), or copy the template by hand **as `my-AutoExtract.xml`**:
+
+```bash
+wget -O /boot/config/plugins/dockerMan/templates-user/my-AutoExtract.xml \
+  https://raw.githubusercontent.com/rcodehub/Unraid-CA-Apps/main/templates/autoextract.xml
+```
+
+then **Docker -> Add Container -> Template: my-AutoExtract**. If you built locally, change *Repository* to `autoextract:latest`.
+
+> **Don't put a copy under any other name (e.g. `autoextract.xml`) in `templates-user`.** Unraid saves your settings to `my-AutoExtract.xml`, but for *Edit* and *Update* it loads the first file in that folder whose `<Name>` is AutoExtract - alphabetically `autoextract.xml` wins, so every edit and update would bring back the default paths. If that has happened, delete the extra copy: `rm /boot/config/plugins/dockerMan/templates-user/autoextract.xml`.
 
 Map:
 * **App data** -> `/mnt/user/appdata/autoextract` (container path `/data`)
