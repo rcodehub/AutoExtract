@@ -196,10 +196,86 @@ def test_settings():
     check("settings: lists parsed", clean["sources"] == ["/a", "/b", "/c"] and clean["junk_patterns"] == ["*.diz", "*.nfo"] and not errors)
 
 
+def stage_dirs(root):
+    return [d for d, _, _ in os.walk(root) if ".autoextract-" in d]
+
+
+def test_parallel_same_names():
+    """Many archives in one folder that all contain the same file names, extracted 8 at a time."""
+    work, eng = fresh()
+    src = os.path.join(work, "src")
+    os.makedirs(src)
+    big = os.urandom(3_000_000)
+    for i in range(12):
+        make_zip(f"{src}/cd{i:02d}.zip", {"file_id.diz": "x", "release.nfo": big, f"part{i:02d}.bin": "p"})
+    s = run(eng, base_cfg(sources=[src], threads=8))
+    t = tree(src)
+    check("parallel same names: all extracted, none failed", s["extracted"] == 12 and s["failed"] == 0, s)
+    check("parallel same names: output complete", all(f"part{i:02d}.bin" in t for i in range(12))
+          and "release.nfo" in t and not any(x.endswith(".zip") for x in t), t)
+    check("parallel same names: no work folders left", not stage_dirs(src), stage_dirs(src))
+    shutil.rmtree(work)
+
+
+def test_parts_spread_over_zips():
+    """Each zip holds one piece of the real content (like scene releases holding RAR parts)."""
+    work, eng = fresh()
+    src = os.path.join(work, "src")
+    os.makedirs(src)
+    inner = os.path.join(work, "inner.zip")
+    make_zip(inner, {"movie/movie.mkv": "m"})
+    make_zip(f"{src}/r01.zip", {"set.zip": ("file", inner), "file_id.diz": "a"})
+    make_zip(f"{src}/r02.zip", {"readme.txt": "b", "file_id.diz": "a"})
+    s = run(eng, base_cfg(sources=[src], threads=4))
+    t = tree(src)
+    check("parts over zips: nested content extracted", "movie/movie.mkv" in t and s["failed"] == 0, (t, s))
+    shutil.rmtree(work)
+
+
+def test_broken_archive():
+    work, eng = fresh()
+    src = os.path.join(work, "src")
+    os.makedirs(src)
+    open(f"{src}/bad.zip", "wb").write(b"PK\x03\x04 this is not really a zip" * 50)
+    make_zip(f"{src}/good.zip", {"g.txt": "g"})
+    s = run(eng, base_cfg(sources=[src], threads=4))
+    t = tree(src)
+    err = s["failures"][0]["error"] if s["failures"] else ""
+    check("broken: left in place, good one extracted", "bad.zip" in t and "g.txt" in t and s["failed"] == 1, (t, s))
+    check("broken: error explained", "exit code" in err and "(" in err, err)
+    check("broken: retried on its own", any("Retrying on its own" in m["msg"] for m in eng.log_since(0)))
+    check("broken: no work folders left", not stage_dirs(src), stage_dirs(src))
+    shutil.rmtree(work)
+
+
+def test_volumes():
+    """Split zips (name.zip + name.z01) and 7-Zip volumes (name.7z.001) - needs zip and 7z."""
+    z7 = shutil.which("7z") or shutil.which("7zz")
+    if not (shutil.which("zip") and z7):
+        print("SKIP volumes (zip/7z not installed)")
+        return
+    work, eng = fresh()
+    src = os.path.join(work, "src")
+    os.makedirs(f"{src}/a")
+    os.makedirs(f"{src}/b")
+    payload = os.path.join(work, "payload.bin")
+    open(payload, "wb").write(os.urandom(300_000))
+    subprocess.run(["zip", "-q", "-s", "100k", f"{src}/a/split.zip", "payload.bin"], cwd=work, check=True)
+    subprocess.run([z7, "a", "-bd", "-v100k", f"{src}/b/vol.7z", payload], check=True, stdout=subprocess.DEVNULL)
+    s = run(eng, base_cfg(sources=[src], threads=4))
+    t = tree(src)
+    check("volumes: split zip and 7z volumes extracted", s["failed"] == 0 and t.count("a/payload.bin") == 1
+          and "b/payload.bin" in t, (t, s["failures"]))
+    check("volumes: every part cleaned up", not any(".z0" in x or ".7z.0" in x or x.endswith(".zip") for x in t), t)
+    shutil.rmtree(work)
+
+
+
 if __name__ == "__main__":
     print("tools:", {k: bool(v) for k, v in Engine(tempfile.mkdtemp(), os.devnull).tools.items()})
     for fn in (test_settings, test_nested_delete_and_perms, test_move_mode, test_dry_run,
-               test_min_age, test_excluded_and_stop):
+               test_min_age, test_excluded_and_stop, test_parallel_same_names, test_parts_spread_over_zips,
+               test_broken_archive, test_volumes):
         fn()
     print("\nALL PASSED" if not FAILS else f"\nFAILED: {FAILS}")
     sys.exit(1 if FAILS else 0)

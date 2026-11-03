@@ -15,9 +15,11 @@ It has a web page with a **live status board**, a **settings page for every opti
 
 The scan walks each source folder **one directory at a time**. For each directory it extracts every archive in it, removes/moves the archive and junk files, rescans *the same directory* for archives that just appeared, and only when the directory is clean moves on to its sub-folders (including any new ones the extraction created).
 
-Several archives in the same directory are extracted in parallel (the **Threads** setting). A failed archive (corrupt, wrong password, missing tool) is **left in place** and listed on the status page; nothing is deleted unless its extraction succeeded.
+Several archives in the same directory are extracted in parallel (the **Threads** setting). Each one is extracted into its own hidden work folder (`.autoextract-...`) next to it and then moved into place, so parallel extractions never write the same file at the same time. Zip/7z/tar files in a folder go before RAR files, because they often contain the RAR parts.
 
-Multi-part RARs (`name.part1.rar`, `name.part2.rar`, ... and `name.rar` + `name.r00`, `name.r01`, ...) are extracted once from the first part, and all parts are cleaned up together.
+If an archive fails, 7-Zip is tried as a second extractor, and after everything else in the folder is done it is retried once on its own. If it still fails (corrupt, missing part, wrong password) it is **left in place** and listed on the status page with the reason in plain words (for example *part of the multi-part set is missing* - and which volume). Nothing is deleted unless its extraction succeeded.
+
+Multi-part archives are extracted once from the first part, and all parts are cleaned up together: RAR (`name.part1.rar`, `name.part2.rar`, ... and `name.rar` + `name.r00`, `name.r01`, ...), split zips (`name.zip` + `name.z01`, `name.z02`, ...) and numbered volumes (`name.7z.001`, `name.zip.001`, ...).
 
 ## Web UI
 

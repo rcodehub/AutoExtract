@@ -13,6 +13,7 @@ import re
 import shutil
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 from collections import deque
@@ -23,6 +24,8 @@ ARCHIVE_SUFFIXES = (
     ".tar.bz2", ".tbz2", ".tar.xz", ".txz",
 )
 PART_RE = re.compile(r"\.part0*(\d+)\.rar$", re.I)
+NUMVOL_RE = re.compile(r"^(.*\.(?:7z|zip))\.(\d{3})$", re.I)   # name.7z.001, name.zip.001
+STAGE_PREFIX = ".autoextract-"     # private per-archive extraction folders
 FIRST_PART_RE = re.compile(r"^(.*)\.part0*1\.rar$", re.I)
 RAR_RE = re.compile(r"^(.*)\.rar$", re.I)
 
@@ -37,19 +40,45 @@ def which_tools():
 
 
 def is_archive(name):
+    if name.startswith(STAGE_PREFIX):
+        return False
+    if NUMVOL_RE.match(name):
+        return True
     return name.lower().endswith(ARCHIVE_SUFFIXES)
 
 
 def is_secondary_volume(name):
     """name.part2.rar, name.part03.rar ... (only the first part is extracted)."""
     m = PART_RE.search(name)
-    return bool(m) and int(m.group(1)) != 1
+    if m:
+        return int(m.group(1)) != 1
+    m = NUMVOL_RE.match(name)
+    return bool(m) and int(m.group(2)) != 1
+
+
+UNRAR_CODES = {1: "warning, some files were not extracted", 2: "fatal error", 3: "checksum error - the archive "
+               "is damaged, or a part of the multi-part set is missing or incomplete", 4: "the archive is locked",
+               5: "could not write the extracted files (disk full or permissions?)",
+               6: "could not open a file or volume", 7: "bad command line", 8: "not enough memory",
+               9: "could not create a file", 10: "no files to extract (not the first volume, or not a valid archive)",
+               11: "wrong or missing password", 12: "read error"}
+UNZIP_CODES = {1: "warning, some files were skipped", 2: "the zip file is damaged",
+               3: "the zip file is damaged or not a zip file", 9: "zip file not found", 11: "no matching files",
+               50: "disk full or write error", 51: "the zip file ends early (incomplete download?)",
+               81: "unsupported compression method", 82: "wrong or missing password"}
+SEVENZ_CODES = {1: "warning", 2: "fatal error (damaged archive, missing volume or wrong password)",
+                7: "bad command line", 8: "not enough memory"}
+
+
+def explain(tool, code):
+    return {"unrar": UNRAR_CODES, "unzip": UNZIP_CODES, "7z": SEVENZ_CODES}.get(tool, {}).get(code, "")
 
 
 class Engine:
     def __init__(self, log_dir, history_path):
         self.lock = threading.RLock()
         self.move_lock = threading.Lock()
+        self.merge_lock = threading.Lock()
         self.stop_event = threading.Event()
         self.procs = set()
         self.thread = None
@@ -258,23 +287,17 @@ class Engine:
 
     # ------------------------------------------------------------ scanning
     def _excluded(self, name, cfg):
+        if name.startswith(STAGE_PREFIX):
+            return True
         low = name.lower()
         return any(fnmatch.fnmatch(low, p.lower()) for p in cfg["exclude_dirs"])
 
     def _group_mtime(self, path):
-        """Newest mtime of the archive (or of all parts of a multi-part RAR)."""
-        try:
-            newest = os.path.getmtime(path)
-        except OSError:
-            return 0
-        d, base = os.path.split(path)
-        m = FIRST_PART_RE.match(base)
-        if m:
-            rx = re.compile("^" + re.escape(m.group(1)) + r"\.part\d+\.rar$", re.I)
+        """Newest mtime of the archive and all its other volumes."""
+        newest = 0
+        for f in self._archive_group(path):
             try:
-                for n in os.listdir(d):
-                    if rx.match(n):
-                        newest = max(newest, os.path.getmtime(os.path.join(d, n)))
+                newest = max(newest, os.path.getmtime(f))
             except OSError:
                 pass
         return newest
@@ -288,25 +311,6 @@ class Engine:
             with self.lock:
                 self.deferred.add(path)
         return ok
-
-    def _mark_nested(self, d, t0, cfg):
-        """Archives created by the extraction just done. Their modification time comes from inside
-        the archive and may look recent, but they are complete, so the age rule must not skip them.
-        A file's ctime is the moment it was written here, so ctime >= t0 means "just extracted"."""
-        for dirpath, dirnames, filenames in os.walk(d):
-            dirnames[:] = [x for x in dirnames if not self._excluded(x, cfg)
-                           and not os.path.islink(os.path.join(dirpath, x))]
-            for fn in filenames:
-                if is_archive(fn):
-                    p = os.path.join(dirpath, fn)
-                    if p in self.deferred:      # was already there (a recent download), not extracted
-                        continue
-                    try:
-                        if os.stat(p).st_ctime >= t0:
-                            with self.lock:
-                                self.nested.add(p)
-                    except OSError:
-                        pass
 
     def _register(self, path):
         with self.lock:
@@ -345,6 +349,8 @@ class Engine:
             self.status["current_dir"] = d
         self.log("info", f"Directory: {d}")
 
+        self._remove_stale_stages(d)
+        pending = []                     # failed once in parallel: retried alone at the end
         for p in range(1, cfg["max_passes"] + 1):
             if self.stop_event.is_set():
                 return
@@ -353,22 +359,36 @@ class Engine:
             todo = []
             for a in self._list_archives(d, cfg):
                 self._register(a)        # picks up nested archives that just appeared
-                if a not in self.failed_paths:
+                if a not in self.failed_paths and a not in pending:
                     todo.append(a)
             did = 0
             if dry:
                 for a in todo:
                     act = f"move to {cfg['move_dir']}" if cfg["archive_mode"] == "move" else "delete"
                     self.log("info", f"[dry run] would extract, then {act}: {a}")
-            else:
-                t0 = time.time() - 1   # file timestamps use a coarser clock that can lag slightly
-                futures = [pool.submit(self._work, a, root, cfg) for a in todo]
-                did = sum(1 for f in futures if f.result())
-                if did:
-                    self._mark_nested(d, t0, cfg)
+            elif todo:
+                # zip/7z/tar first: they often contain the parts of a RAR set
+                batch = [a for a in todo if not a.lower().endswith(".rar")] or todo
+                futures = [(a, pool.submit(self._work, a, root, cfg, False)) for a in batch]
+                for a, f in futures:
+                    r = f.result()
+                    if r == "ok":
+                        did += 1
+                    elif r == "retry":
+                        pending.append(a)
+            elif pending:
+                retry, pending = [a for a in pending if os.path.exists(a)], []
+                for a in retry:          # one at a time, after everything else in the folder
+                    if self.stop_event.is_set():
+                        return
+                    self.log("info", f"Retrying on its own: {a}")
+                    if self._work(a, root, cfg, True) == "ok":
+                        did += 1
             self._clean_junk(d, root, cfg)
-            if dry or did == 0:          # nothing new came out -> directory is finished
+            if dry or (did == 0 and not pending):   # nothing new came out -> directory is finished
                 break
+        for a in pending:
+            self._fail(a, "not retried: nesting pass limit reached")
 
         if not dry and not self.stop_event.is_set():
             self._fix_perms(d, cfg)
@@ -395,9 +415,10 @@ class Engine:
         with self.lock:
             self._slots[i] = None
 
-    def _work(self, path, root, cfg):
+    def _work(self, path, root, cfg, final):
+        """Returns "ok", "retry" (failed - try again alone later) or "fail"."""
         if self.stop_event.is_set():
-            return False
+            return "fail"
         slot = self._acquire_slot(path)
         try:
             self.log("info", f"[thread {slot + 1}] Extracting {path}")
@@ -406,13 +427,16 @@ class Engine:
                 if self._dispose_archive(path, root, cfg):
                     with self.lock:
                         self.status["extracted"] += 1
-                    return True
+                    return "ok"
                 self._fail(path, "Extracted, but the archive could not be removed/moved")
-                return False
+                return "fail"
             if self.stop_event.is_set():
-                return False
+                return "fail"
+            if not final:
+                self.log("warn", f"Failed, will retry on its own after the rest of the folder: {path} - {err}")
+                return "retry"
             self._fail(path, err)
-            return False
+            return "fail"
         finally:
             self._release_slot(slot)
 
@@ -423,41 +447,44 @@ class Engine:
         self.log("error", f"FAILED (left in place): {path} - {err}")
 
     # ------------------------------------------------------------ extraction
-    def _command(self, path, dest, cfg):
+    def _commands(self, path, dest, cfg):
+        """Extractors to try, best first: [(tool, command)]."""
         t, low, ow = self.tools, path.lower(), cfg["overwrite"]
-
-        def seven(p):
-            return [t["7z"], "x", "-aoa" if ow else "-aos", "-y", "-bd", "-o" + dest, p]
-
+        seven = [("7z", [t["7z"], "x", "-aoa" if ow else "-aos", "-y", "-bd", "-p-", "-o" + dest, path])] \
+            if t["7z"] else []
+        unzip = [("unzip", [t["unzip"], "-o" if ow else "-n", "-q", path, "-d", dest])] if t["unzip"] else []
+        unrar = [("unrar", [t["unrar"], "x", "-o+" if ow else "-o-", "-idq", "-p-", "-y", path, dest + "/"])] \
+            if t["unrar"] else []
+        if NUMVOL_RE.match(os.path.basename(path)):
+            return seven                                  # name.7z.001 / name.zip.001
         if low.endswith(".zip"):
-            if t["unzip"]:
-                return [t["unzip"], "-o" if ow else "-n", "-q", path, "-d", dest]
-            if t["7z"]:
-                return seven(path)
-        elif low.endswith(".rar"):
-            if t["unrar"]:
-                return [t["unrar"], "x", "-o+" if ow else "-o-", "-idq", "-p-", path, dest + "/"]
-            if t["7z"]:
-                return seven(path)
-        elif low.endswith(".7z"):
-            if t["7z"]:
-                return seven(path)
-        elif low.endswith(ARCHIVE_SUFFIXES):
-            if t["tar"]:
-                return [t["tar"], "-xf", path, "-C", dest] + ([] if ow else ["-k"])
-        return None
+            if self._split_zip_parts(path):
+                return seven                              # name.zip + name.z01 ...: unzip can't read these
+            return unzip + seven
+        if low.endswith(".rar"):
+            return unrar + seven
+        if low.endswith(".7z"):
+            return seven
+        if low.endswith(ARCHIVE_SUFFIXES) and t["tar"]:
+            return [("tar", [t["tar"], "-xf", path, "-C", dest] + ([] if ow else ["-k"]))]
+        return []
 
-    def _extract(self, path, dest, cfg):
-        cmd = self._command(path, dest, cfg)
-        if not cmd:
-            return False, "No extractor installed for this file type"
+    def _split_zip_parts(self, path):
+        d, base = os.path.split(path)
+        rx = re.compile("^" + re.escape(base[:-4]) + r"\.z\d\d+$", re.I)
+        try:
+            return [os.path.join(d, n) for n in os.listdir(d) if rx.match(n)]
+        except OSError:
+            return []
+
+    def _exec(self, cmd):
         try:
             # own process group so "Stop" can kill the extractor and anything it spawned
             p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                  stderr=subprocess.STDOUT, text=True, errors="replace",
                                  start_new_session=True)
         except OSError as e:
-            return False, str(e)
+            return None, str(e)
         with self.lock:
             self.procs.add(p)
         try:
@@ -465,10 +492,79 @@ class Engine:
         finally:
             with self.lock:
                 self.procs.discard(p)
-        if p.returncode == 0:
-            return True, ""
-        tail = " ".join((out or "").split())[-300:]
-        return False, f"exit code {p.returncode}: {tail}".strip()
+        return p.returncode, out or ""
+
+    def _extract(self, path, dest, cfg):
+        """Extract into a private folder next to the archive, then move the result into place, so
+        parallel extractions never write the same file at the same time. If the first extractor
+        fails, the next one (7-Zip) is tried."""
+        tools = [tool for tool, _ in self._commands(path, dest, cfg)]
+        if not tools:
+            return False, "No extractor installed for this file type"
+        errors = []
+        for tool in tools:
+            if self.stop_event.is_set():
+                return False, "stopped"
+            try:
+                stage = tempfile.mkdtemp(prefix=STAGE_PREFIX, dir=dest)
+            except OSError as e:
+                return False, f"cannot create a work folder in {dest}: {e}"
+            try:
+                cmd = dict(self._commands(path, stage, cfg))[tool]
+                code, out = self._exec(cmd)
+                if code == 0:
+                    self._merge(stage, dest, cfg)
+                    if errors:
+                        self.log("info", f"Extracted with {tool} after: {' | '.join(errors)}")
+                    return True, ""
+                why = explain(tool, code) if code is not None else ""
+                tail = " ".join(out.split())[-200:]
+                errors.append(f"{tool} exit code {code}" + (f" ({why})" if why else "")
+                              + (f": {tail}" if tail else ""))
+            except OSError as e:
+                errors.append(f"{tool}: {e}")
+            finally:
+                shutil.rmtree(stage, ignore_errors=True)
+        return False, " | then ".join(errors)
+
+    def _merge(self, stage, dest, cfg):
+        """Move everything from the private folder into the archive's folder."""
+        ow = cfg["overwrite"]
+        with self.merge_lock:
+            for cur, dirs, files in os.walk(stage):
+                rel = os.path.relpath(cur, stage)
+                tdir = dest if rel == "." else os.path.join(dest, rel)
+                if not os.path.isdir(tdir):
+                    dirs[:] = []                           # parent clashed with a file: skipped
+                    continue
+                for dn in dirs:
+                    td = os.path.join(tdir, dn)
+                    if os.path.lexists(td) and not os.path.isdir(td):
+                        if not ow:
+                            continue
+                        os.remove(td)
+                    os.makedirs(td, exist_ok=True)
+                for fn in files:
+                    src, dst = os.path.join(cur, fn), os.path.join(tdir, fn)
+                    if os.path.lexists(dst):
+                        if os.path.isdir(dst) and not os.path.islink(dst):
+                            self.log("warn", f"Not replacing folder {dst} with a file of the same name")
+                            continue
+                        if not ow:
+                            continue
+                    os.replace(src, dst)
+                    if is_archive(fn):
+                        with self.lock:
+                            self.nested.add(dst)           # came out of an archive: complete, not a download
+
+    def _remove_stale_stages(self, d):
+        """Work folders left behind by a crash or a forced stop."""
+        try:
+            for e in os.scandir(d):
+                if e.name.startswith(STAGE_PREFIX) and e.is_dir(follow_symlinks=False):
+                    shutil.rmtree(e.path, ignore_errors=True)
+        except OSError:
+            pass
 
     # ------------------------------------------------------------ cleanup
     def _archive_group(self, path):
@@ -478,6 +574,12 @@ class Engine:
             names = os.listdir(d)
         except OSError:
             return [path]
+        m = NUMVOL_RE.match(base)
+        if m:
+            rx = re.compile("^" + re.escape(m.group(1)) + r"\.\d{3}$", re.I)
+            return [os.path.join(d, n) for n in names if rx.match(n)] or [path]
+        if base.lower().endswith(".zip"):
+            return [path] + self._split_zip_parts(path)
         m = FIRST_PART_RE.match(base)
         if m:
             rx = re.compile("^" + re.escape(m.group(1)) + r"\.part\d+\.rar$", re.I)
