@@ -38,7 +38,7 @@ Buttons: **Run now**, **Dry run** (shows what *would* happen, changes nothing - 
 | Source folders | Folders to scan, with all sub-folders (container paths) |
 | Scan automatically / interval | Scan every N minutes, counted from the end of the previous scan. Optional scan at container start |
 | Threads | Archives extracted at once within a folder |
-| Skip archives newer than | Ignore archives modified in the last N minutes, so files that are still downloading aren't touched (they're picked up on a later scan) |
+| Skip archives newer than | Leave archives modified in the last N minutes for a later scan, so files still downloading or copying aren't extracted half-written. Archives that came out of another archive are never skipped (remembered between scans in `/data/extracted-archives.json`). Each skipped file is listed in the log. 0 = never skip |
 | Max nested levels | Safety cap for archives inside archives |
 | Overwrite existing files | When an extracted file already exists |
 | Archives that extracted fine | Delete, or move to the move folder |
