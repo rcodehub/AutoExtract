@@ -263,6 +263,12 @@ def api_browse():
 
 
 _cfg, _problems, _src = settings.load_with_report()
+if _src == "defaults":          # first start: write the settings file now so it always exists in /config
+    _saved, _errs = settings.save(_cfg)
+    if _saved is None:
+        print(f"[settings] could not create the settings file: {'; '.join(_errs)}", flush=True)
+    else:
+        _src = "file (created at first start)"
 print(f"[settings] {settings.SETTINGS_PATH}: {_src}"
       + (f" - ignored invalid values: {'; '.join(_problems)}" if _problems else "")
       + f" | {CONFIG_DIR} is {'a mapped folder (settings persist)' if any(m['config'] for m in mounts.list_mounts(CONFIG_DIR)) else 'NOT a mapped folder - settings will be lost when the container is recreated!'}",
