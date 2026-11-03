@@ -1,9 +1,13 @@
-FROM python:3.12-alpine
+FROM python:3.12-slim
 
-# Extractors: unzip, GNU tar (+ xz/bzip2 support) and 7-Zip (handles .7z and .rar).
-# (Alpine no longer ships a separate unrar package.)
-RUN apk add --no-cache unzip tar xz bzip2 tzdata 7zip \
- && (command -v 7zz || command -v 7z) && unzip -v | head -1 && tar --version | head -1
+# Extractors: unrar (official RarLab extractor, Debian non-free) for .rar incl. multi-part sets,
+# 7-Zip (+ its RAR plugin) for .7z, unzip for .zip, GNU tar with xz/bzip2 for tarballs.
+# (Alpine's 7-Zip is built without RAR support, so the image is Debian based.)
+RUN sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.list.d/debian.sources \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends unrar 7zip 7zip-rar unzip xz-utils bzip2 tzdata \
+ && rm -rf /var/lib/apt/lists/* \
+ && unrar | head -2 && 7z i | grep -qi rar && unzip -v | head -1 && tar --version | head -1
 
 WORKDIR /app
 COPY requirements.txt .
@@ -19,6 +23,6 @@ VOLUME /data
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
-  CMD wget -qO- "http://127.0.0.1:${PORT}/health" >/dev/null || exit 1
+  CMD python3 -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/health' % os.environ.get('PORT', '8080'), timeout=4)" || exit 1
 
 CMD ["sh", "-c", "exec waitress-serve --listen=0.0.0.0:${PORT} --threads=8 main:app"]

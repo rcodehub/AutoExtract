@@ -106,7 +106,7 @@ Docker maps a folder on your server (the **host path**, e.g. `/mnt/user/download
 * **Ownership:** the container runs as root, so extracted files are owned by root unless you enable "Also set the owner" (99/100 = nobody:users on Unraid).
 * **Stop** ends the running extractions. An interrupted archive is left in place (it may have partly extracted - the next scan simply extracts it again over the top).
 * **Password-protected archives** fail and are listed; they are never deleted.
-* `.rar` and `.7z` files are extracted with 7-Zip (the image includes it); `.zip` uses `unzip`, tar files use GNU `tar`.
+* `.rar` files (including multi-part sets) are extracted with RarLab's official `unrar`, `.7z` with 7-Zip, `.zip` with `unzip`, and tar files with GNU `tar`. The image is Debian based because Alpine's 7-Zip has no RAR support.
 
 ## Development
 
