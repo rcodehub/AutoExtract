@@ -296,11 +296,41 @@ def test_nested_remembered_between_runs():
 
 
 
+def test_stats():
+    work, eng = fresh()
+    src = os.path.join(work, "src")
+    os.makedirs(src)
+    inner = os.path.join(work, "inner.zip")
+    make_zip(inner, {"a.bin": b"a" * 1000, "b.bin": b"b" * 500})
+    make_zip(f"{src}/outer.zip", {"inner.zip": ("file", inner), "c.txt": "c" * 100})
+    open(f"{src}/x.diz", "w").write("junk")
+    open(f"{src}/bad.zip", "wb").write(b"PK\x03\x04 nope" * 10)
+    s = run(eng, base_cfg(sources=[src]))
+    st = eng.stats.snapshot()
+    t = st["totals"]
+    check("stats: archives/files counted", t["archives"] == 2 and t["files"] == 4, t)
+    check("stats: bytes out = sizes of extracted files",
+          t["bytes_out"] == 1500 + 100 + os.path.getsize(inner), t)
+    check("stats: freed space, junk, failures, nested, runs",
+          t["freed"] > 0 and t["junk"] == 1 and t["failed"] == 1 and t["nested"] == 1 and t["runs"] == 1, t)
+    check("stats: per type and per day", st["types"].get("zip") == 2
+          and st["days"][time.strftime("%Y-%m-%d")]["archives"] == 2, st)
+    check("stats: records", st["records"]["largest"]["value"] > 0 and st["records"]["most_files"]["value"] == 2, st["records"])
+    h = eng.history[-1]
+    check("stats: run size in history", h["files_out"] == 4 and h["bytes_out"] == t["bytes_out"], h)
+    eng2 = Engine(os.path.join(work, "cfg", "logs"), os.path.join(work, "cfg", "history.json"))
+    check("stats: survive a restart", eng2.stats.snapshot()["totals"]["archives"] == 2)
+    eng2.stats.reset()
+    check("stats: reset", eng2.stats.snapshot()["totals"]["archives"] == 0)
+    shutil.rmtree(work)
+
+
+
 if __name__ == "__main__":
     print("tools:", {k: bool(v) for k, v in Engine(tempfile.mkdtemp(), os.devnull).tools.items()})
     for fn in (test_settings, test_nested_delete_and_perms, test_move_mode, test_dry_run,
                test_min_age, test_excluded_and_stop, test_parallel_same_names, test_parts_spread_over_zips,
-               test_broken_archive, test_volumes, test_nested_remembered_between_runs):
+               test_broken_archive, test_volumes, test_nested_remembered_between_runs, test_stats):
         fn()
     print("\nALL PASSED" if not FAILS else f"\nFAILED: {FAILS}")
     sys.exit(1 if FAILS else 0)

@@ -27,7 +27,8 @@ Multi-part archives are extracted once from the first part, and all parts are cl
 |---|---|
 | **Status** | Next scan countdown, last result, current folder, progress (done / found / remaining / failed), what each thread is working on right now, failed archives, live log (stays scrolled to the newest line; *Clear log* empties the view - the log file in `/data/logs` is kept) |
 | **Settings** | Every option below, with a folder picker (hidden folders included), and the folders on your server behind `/downloads`, `/trash` and `/data` |
-| **History** | Past scans with counts and failures |
+| **History** | Past scans with counts, data size and failures |
+| **Stats** | Lifetime totals - data extracted, archives, files, space freed/moved, junk cleaned, success rate, time and average speed - a 30-day activity chart (archives, data or files per day, with a table view), archive types and records (largest archive, most files, fastest, busiest day). Kept in `/data/stats.json`, survive updates; *Reset statistics* starts over |
 
 Buttons: **Run now**, **Dry run** (shows what *would* happen, changes nothing - nested archives only show up in a real run), **Stop**.
 

@@ -190,6 +190,18 @@ def api_log():
     return jsonify(entries=entries, last=engine.log_seq, cleared=engine.log_cleared)
 
 
+@app.route("/api/stats")
+def api_stats():
+    return jsonify(stats=engine.stats.snapshot(), now=time.time())
+
+
+@app.route("/api/stats/reset", methods=["POST"])
+def api_stats_reset():
+    engine.stats.reset()
+    engine.log("info", "Statistics were reset")
+    return jsonify(ok=True)
+
+
 @app.route("/api/log/clear", methods=["POST"])
 def api_log_clear():
     engine.clear_log()

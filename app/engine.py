@@ -20,6 +20,8 @@ import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
+from stats import Stats
+
 ARCHIVE_SUFFIXES = (
     ".zip", ".rar", ".7z", ".tar", ".tar.gz", ".tgz",
     ".tar.bz2", ".tbz2", ".tar.xz", ".txz",
@@ -71,6 +73,13 @@ SEVENZ_CODES = {1: "warning", 2: "fatal error (damaged archive, missing volume o
                 7: "bad command line", 8: "not enough memory"}
 
 
+def _human(n):
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+
+
 def explain(tool, code):
     return {"unrar": UNRAR_CODES, "unzip": UNZIP_CODES, "7z": SEVENZ_CODES}.get(tool, {}).get(code, "")
 
@@ -106,6 +115,7 @@ class Engine:
             self._file_log = None
 
         self.history = self._load_history()
+        self.stats = Stats(os.path.join(os.path.dirname(history_path) or ".", "stats.json"))
         self.status = self._blank_status()
         self._warned = set()
         self.seen = set()            # archives counted so far (for found/remaining)
@@ -166,7 +176,7 @@ class Engine:
             "state": "idle", "trigger": None, "dry_run": False,
             "started_at": None, "finished_at": None, "result": None, "message": "",
             "current_dir": "", "pass": 0,
-            "extracted": 0, "junk": 0, "slots": [],
+            "extracted": 0, "junk": 0, "slots": [], "files_out": 0, "bytes_out": 0, "bytes_in": 0,
         }
 
     @property
@@ -309,10 +319,13 @@ class Engine:
                 "found": len(self.seen), "extracted": st["extracted"],
                 "failed": len(self.failures), "junk": st["junk"],
                 "deferred": len(self.deferred),
+                "files_out": st["files_out"], "bytes_out": st["bytes_out"], "bytes_in": st["bytes_in"],
                 "failures": self.failures[-50:],
             }
             self.history.append(entry)
             self._save_history()
+        if not dry_run:
+            self.stats.run_finished()
         self.log("info", f"=== Run {result}: {entry['extracted']} extracted, "
                          f"{entry['failed']} failed, {entry['junk']} junk handled ===")
 
@@ -459,11 +472,27 @@ class Engine:
         slot = self._acquire_slot(path)
         try:
             self.log("info", f"[thread {slot + 1}] Extracting {path}")
-            ok, err = self._extract(path, os.path.dirname(path), cfg)
+            t0 = time.time()
+            ok, err, out = self._extract(path, os.path.dirname(path), cfg)
+            secs = time.time() - t0
             if ok:
+                bytes_in = 0
+                for f in self._archive_group(path):
+                    try:
+                        bytes_in += os.path.getsize(f)
+                    except OSError:
+                        pass
+                was_nested = path in self.nested
                 if self._dispose_archive(path, root, cfg):
                     with self.lock:
                         self.status["extracted"] += 1
+                        self.status["files_out"] += out["files"]
+                        self.status["bytes_out"] += out["bytes"]
+                        self.status["bytes_in"] += bytes_in
+                    self.stats.archive(path, out["files"], out["bytes"], bytes_in, secs,
+                                       cfg["archive_mode"], was_nested)
+                    self.log("info", f"Done: {os.path.basename(path)} - {out['files']} file(s), "
+                                     f"{_human(out['bytes'])} in {secs:.1f}s")
                     return "ok"
                 self._fail(path, "Extracted, but the archive could not be removed/moved")
                 return "fail"
@@ -481,6 +510,7 @@ class Engine:
         with self.lock:
             self.failed_paths.add(path)
             self.failures.append({"path": path, "error": err})
+        self.stats.failed()
         self.log("error", f"FAILED (left in place): {path} - {err}")
 
     # ------------------------------------------------------------ extraction
@@ -537,23 +567,23 @@ class Engine:
         fails, the next one (7-Zip) is tried."""
         tools = [tool for tool, _ in self._commands(path, dest, cfg)]
         if not tools:
-            return False, "No extractor installed for this file type"
+            return False, "No extractor installed for this file type", None
         errors = []
         for tool in tools:
             if self.stop_event.is_set():
-                return False, "stopped"
+                return False, "stopped", None
             try:
                 stage = tempfile.mkdtemp(prefix=STAGE_PREFIX, dir=dest)
             except OSError as e:
-                return False, f"cannot create a work folder in {dest}: {e}"
+                return False, f"cannot create a work folder in {dest}: {e}", None
             try:
                 cmd = dict(self._commands(path, stage, cfg))[tool]
                 code, out = self._exec(cmd)
                 if code == 0:
-                    self._merge(stage, dest, cfg)
+                    out = self._merge(stage, dest, cfg)
                     if errors:
                         self.log("info", f"Extracted with {tool} after: {' | '.join(errors)}")
-                    return True, ""
+                    return True, "", out
                 why = explain(tool, code) if code is not None else ""
                 tail = " ".join(out.split())[-200:]
                 errors.append(f"{tool} exit code {code}" + (f" ({why})" if why else "")
@@ -562,11 +592,12 @@ class Engine:
                 errors.append(f"{tool}: {e}")
             finally:
                 shutil.rmtree(stage, ignore_errors=True)
-        return False, " | then ".join(errors)
+        return False, " | then ".join(errors), None
 
     def _merge(self, stage, dest, cfg):
         """Move everything from the private folder into the archive's folder."""
         ow = cfg["overwrite"]
+        out = {"files": 0, "bytes": 0}
         with self.merge_lock:
             for cur, dirs, files in os.walk(stage):
                 rel = os.path.relpath(cur, stage)
@@ -589,10 +620,16 @@ class Engine:
                             continue
                         if not ow:
                             continue
+                    try:
+                        out["bytes"] += os.lstat(src).st_size
+                    except OSError:
+                        pass
                     os.replace(src, dst)
+                    out["files"] += 1
                     if is_archive(fn):
                         with self.lock:
                             self.nested.add(dst)           # came out of an archive: complete, not a download
+        return out
 
     def _remove_stale_stages(self, d):
         """Work folders left behind by a crash or a forced stop."""
@@ -648,9 +685,15 @@ class Engine:
                 if cfg["dry_run"]:
                     act = f"move to {cfg['move_dir']}" if cfg["junk_mode"] == "move" else "delete"
                     self.log("info", f"[dry run] would {act} junk: {e.path}")
-                elif self._dispose(e.path, root, cfg, cfg["junk_mode"]):
-                    with self.lock:
-                        self.status["junk"] += 1
+                else:
+                    try:
+                        size = e.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        size = 0
+                    if self._dispose(e.path, root, cfg, cfg["junk_mode"]):
+                        with self.lock:
+                            self.status["junk"] += 1
+                        self.stats.junk(size, cfg["junk_mode"])
 
     def _dispose(self, path, root, cfg, mode):
         try:

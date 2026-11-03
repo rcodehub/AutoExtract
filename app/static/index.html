@@ -13,6 +13,7 @@
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --radius: 10px;
 }
+@media (max-width: 420px) { .tiles { grid-template-columns: 1fr 1fr; } .tile .v { font-size: 20px; } .hero b { font-size: 44px; } }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #11161c; --panel: #1a222b; --text: #e6ebf0; --muted: #93a1b0; --line: #2b3643;
@@ -67,6 +68,38 @@ td.n { width: 70px; white-space: nowrap; } td.t { width: 80px; white-space: nowr
 .idle { color: var(--muted); }
 .log { background: #0d1117; color: #d0d7de; font: 12.5px/1.5 var(--mono); border-radius: 8px;
   padding: 10px 12px; height: 300px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+/* stats */
+.hero { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+.hero b { font-size: 52px; font-weight: 650; line-height: 1.05; letter-spacing: -1px; }
+.hero span { color: var(--muted); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-top: 14px; }
+.tile { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.tile .l { font-size: 13px; color: var(--muted); }
+.tile .v { font-size: 24px; font-weight: 650; margin-top: 2px; }
+.tile .s { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.charthead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+.charthead h2 { margin: 0; margin-right: auto; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; padding: 5px 12px; font-size: 13px; }
+.seg button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.chart { position: relative; }
+.chart svg { display: block; width: 100%; height: 220px; overflow: visible; }
+.chart .grid { stroke: var(--line); stroke-width: 1; }
+.chart .ax { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.chart .col { fill: var(--accent); }
+.chart .col.today { fill: var(--accent); }
+.chart .hit { fill: transparent; cursor: default; }
+.chart .hit:hover + .col, .chart .col.hover { opacity: .75; }
+.tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px 10px; font-size: 13px; box-shadow: 0 4px 16px rgba(0,0,0,.15);
+  white-space: nowrap; display: none; z-index: 2; }
+.tip b { display: block; margin-bottom: 2px; }
+.types { display: grid; grid-template-columns: max-content 1fr max-content; gap: 8px 12px; align-items: center; }
+.types .track { height: 14px; }
+.types .fill { height: 14px; background: var(--accent); border-radius: 0 4px 4px 0; min-width: 2px; }
+.types .n { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.rec { display: grid; grid-template-columns: max-content max-content 1fr; gap: 6px 14px; font-size: 14px; }
+.rec .path { overflow-wrap: anywhere; }
 .loghead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
 .loghead h2 { margin: 0; margin-right: auto; }
 .loghead label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
@@ -135,6 +168,7 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
       <button data-tab="status" class="on">Status</button>
       <button data-tab="settings">Settings</button>
       <button data-tab="history">History</button>
+      <button data-tab="stats">Stats</button>
     </nav>
   </div>
 </header>
@@ -161,6 +195,7 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
         <div><b id="cFail">0</b><span>failed</span></div>
         <div><b id="cJunk">0</b><span>junk handled</span></div>
         <div><b id="cDef">0</b><span>too recent (skipped)</span></div>
+        <div><b id="cData">0 B</b><span>data extracted</span></div>
       </div>
     </section>
 
@@ -265,12 +300,38 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
     <div id="storeInfo" class="muted small" style="margin-top:6px"></div>
   </div>
 
+  <!-- STATS -->
+  <div id="tab-stats" class="tab">
+    <section class="card" style="margin-top:0">
+      <div class="hero"><b id="sHero">0 B</b><span id="sHeroSub">extracted so far</span></div>
+      <div class="tiles" id="sTiles"></div>
+    </section>
+    <section class="card">
+      <div class="charthead"><h2 id="sChartTitle">Last 30 days</h2>
+        <div class="seg" id="sMetric">
+          <button data-m="archives" class="on">Archives</button><button data-m="bytes_out">Data</button><button data-m="files">Files</button>
+        </div></div>
+      <div class="chart" id="sChart"><div class="tip" id="sTip"></div></div>
+      <details style="margin-top:8px"><summary class="small muted">Show as table</summary>
+        <div style="overflow-x:auto;max-height:260px"><table><thead><tr><th>Day</th><th>Archives</th><th>Files</th><th>Data</th><th>Failed</th></tr></thead>
+        <tbody id="sTable"></tbody></table></div></details>
+    </section>
+    <div class="two" style="gap:14px">
+      <section class="card"><h2>Archive types</h2><div class="types" id="sTypes"></div></section>
+      <section class="card"><h2>Records</h2><div class="rec" id="sRecords"></div></section>
+    </div>
+    <section class="card" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <span class="muted small" id="sSince"></span><span class="spacer"></span>
+      <button class="small danger" id="sReset">Reset statistics</button>
+    </section>
+  </div>
+
   <!-- HISTORY -->
   <div id="tab-history" class="tab">
     <section class="card" style="margin-top:0">
       <h2>Previous scans</h2>
       <div style="overflow-x:auto"><table>
-        <thead><tr><th>Started</th><th>Type</th><th>Result</th><th>Found</th><th>Extracted</th><th>Failed</th><th>Junk</th><th>Took</th></tr></thead>
+        <thead><tr><th>Started</th><th>Type</th><th>Result</th><th>Found</th><th>Extracted</th><th>Failed</th><th>Junk</th><th>Data</th><th>Took</th></tr></thead>
         <tbody id="hist"></tbody></table></div>
     </section>
   </div>
@@ -328,6 +389,7 @@ document.querySelectorAll("nav button").forEach((b) => b.addEventListener("click
   document.querySelectorAll("nav button").forEach((x) => x.classList.toggle("on", x === b));
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("on", t.id === "tab-" + b.dataset.tab));
   if (b.dataset.tab === "history") loadHistory();
+  if (b.dataset.tab === "stats") loadStats();
 }));
 
 let bannerTimer = null, connLost = false;
@@ -387,6 +449,7 @@ function renderStatus(d) {
   $("cDone").textContent = e.done; $("cFound").textContent = e.found; $("cLeft").textContent = e.remaining;
   $("cExt").textContent = e.extracted; $("cFail").textContent = e.failed; $("cJunk").textContent = e.junk;
   $("cDef").textContent = e.deferred;
+  $("cData").textContent = fmtSize(e.bytes_out || 0);
   $("barfill").style.width = (e.found ? Math.min(100, e.done / e.found * 100) : 0) + "%";
 
   // threads
@@ -633,21 +696,191 @@ $("dlgOk").addEventListener("click", () => { if (pickCb) pickCb(pickPath); $("dl
 async function loadHistory() {
   const d = await api("/api/history");
   const tb = $("hist"); tb.replaceChildren();
-  if (!d.history.length) tb.append(h("tr", {}, h("td", { colspan: 8, class: "idle" }, "No scans yet")));
+  if (!d.history.length) tb.append(h("tr", {}, h("td", { colspan: 9, class: "idle" }, "No scans yet")));
   for (const r of d.history) {
     const res = { completed: "Completed", stopped: "Stopped", error: "Failed" }[r.result] || r.result;
     const row = h("tr", {},
       h("td", {}, fmtTime(r.started_at)), h("td", {}, (r.dry_run ? "dry run, " : "") + r.trigger),
       h("td", {}, res + (r.message ? " - " + r.message : "")),
       h("td", {}, r.found), h("td", {}, r.extracted), h("td", {}, r.failed), h("td", {}, r.junk),
+      h("td", {}, r.bytes_out != null ? fmtSize(r.bytes_out) : "-"),
       h("td", {}, dur(r.finished_at - r.started_at)));
     tb.append(row);
     if (r.failures && r.failures.length) {
-      tb.append(h("tr", {}, h("td", { colspan: 8 }, h("details", {}, h("summary", { class: "small" }, r.failures.length + " failed archive(s)"),
+      tb.append(h("tr", {}, h("td", { colspan: 9 }, h("details", {}, h("summary", { class: "small" }, r.failures.length + " failed archive(s)"),
         r.failures.map((f) => h("div", { class: "fail" }, h("div", { class: "path" }, f.path), h("div", { class: "err" }, f.error)))))));
     }
   }
 }
+
+// ---------------------------------------------------------------- stats
+function fmtSize(n) {
+  if (!n) return "0 B";
+  const u = ["B", "KB", "MB", "GB", "TB", "PB"]; let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i === 0 ? n : +(n >= 100 ? n.toFixed(0) : n.toFixed(1))) + " " + u[i];
+}
+const fmtNum = (n) => (n || 0).toLocaleString();
+function fmtCompact(n) {
+  return n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M" : n >= 1e4 ? (n / 1e3).toFixed(0) + "K" : fmtNum(n);
+}
+function fmtDuration(sec) {
+  sec = Math.round(sec || 0);
+  if (sec < 60) return sec + "s";
+  if (sec < 3600) return Math.floor(sec / 60) + "m " + (sec % 60) + "s";
+  return Math.floor(sec / 3600) + "h " + Math.floor((sec % 3600) / 60) + "m";
+}
+const dayKey = (d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+let statsData = null, statsMetric = "archives";
+try { statsMetric = localStorage.getItem("ae.statsMetric") || "archives"; } catch (e) { /* ignore */ }
+
+async function loadStats() {
+  const d = await api("/api/stats");
+  statsData = d.stats;
+  renderStats();
+}
+
+function tile(label, value, sub) {
+  return h("div", { class: "tile" }, h("div", { class: "l" }, label), h("div", { class: "v" }, value), sub ? h("div", { class: "s" }, sub) : "");
+}
+
+function renderStats() {
+  const st = statsData, t = st.totals;
+  $("sHero").textContent = fmtSize(t.bytes_out);
+  $("sHeroSub").textContent = "extracted from " + fmtNum(t.archives) + " archive" + (t.archives === 1 ? "" : "s");
+  const attempts = t.archives + t.failed;
+  const speed = t.seconds > 0 ? t.bytes_out / t.seconds : 0;
+  $("sTiles").replaceChildren(
+    tile("Archives extracted", fmtNum(t.archives), t.nested ? fmtNum(t.nested) + " were inside other archives" : ""),
+    tile("Files extracted", fmtNum(t.files), t.archives ? "about " + fmtNum(Math.round(t.files / t.archives)) + " per archive" : ""),
+    tile("Archive data processed", fmtSize(t.bytes_in), t.bytes_in ? "unpacked to " + (t.bytes_out / t.bytes_in).toFixed(2) + "x its size" : ""),
+    tile("Space freed", fmtSize(t.freed), "archives and junk deleted"),
+    tile("Moved to trash", fmtSize(t.moved), "archives and junk moved"),
+    tile("Junk files cleaned", fmtNum(t.junk), t.junk_bytes ? fmtSize(t.junk_bytes) : ""),
+    tile("Success rate", attempts ? (100 * t.archives / attempts).toFixed(attempts > t.archives ? 1 : 0) + "%" : "-", fmtNum(t.failed) + " failed"),
+    tile("Scans run", fmtNum(t.runs), ""),
+    tile("Time extracting", fmtDuration(t.seconds), speed ? "average " + fmtSize(speed) + "/s" : ""));
+  $("sSince").textContent = "Counting since " + new Date(st.since * 1000).toLocaleDateString() + ". Statistics are kept in /data/stats.json and survive updates.";
+  document.querySelectorAll("#sMetric button").forEach((b) => b.classList.toggle("on", b.dataset.m === statsMetric));
+  renderChart();
+  renderTypes();
+  renderRecords();
+}
+
+function renderChart() {
+  const st = statsData, m = statsMetric;
+  const days = [];
+  const today = new Date(); today.setHours(12, 0, 0, 0);
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date(today); d.setDate(today.getDate() - i);
+    const k = dayKey(d);
+    days.push({ d, k, v: st.days[k] || { archives: 0, files: 0, bytes_out: 0, bytes_in: 0, failed: 0 } });
+  }
+  const label = { archives: "Archives extracted", bytes_out: "Data extracted", files: "Files extracted" }[m];
+  $("sChartTitle").textContent = label + " - last 30 days";
+  const fmt = m === "bytes_out" ? fmtSize : fmtCompact;
+  const max = Math.max(...days.map((x) => x.v[m] || 0));
+  // clean y ticks
+  const nice = (x) => { if (x <= 0) return 1; const p = Math.pow(10, Math.floor(Math.log10(x))); const f = x / p; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p; };
+  // clean y ticks: steps of 1/2/5 x 10^n (in KB/MB/GB units for data)
+  let unit = 1;
+  if (m === "bytes_out") while (unit * 1024 <= max) unit *= 1024;
+  const sm = max / unit, step = max ? nice(sm / 4) : (m === "bytes_out" ? 1 : 1);
+  const nTicks = Math.max(1, Math.ceil(sm / step - 1e-9));
+  const top = (max ? nTicks * step * unit : (m === "bytes_out" ? 4 * 1024 * 1024 : 4));
+  const ticks = max ? nTicks : 4;
+  const W = Math.max(300, $("sChart").clientWidth || 900), H = 220, L = 56, B = 22, T = 8, R = 4;
+  const pw = W - L - R, ph = H - B - T, band = pw / days.length, bw = Math.min(24, band * 0.62);
+  const ns = "http://www.w3.org/2000/svg";
+  const el = (tag, attrs, text) => { const e = document.createElementNS(ns, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (text != null) e.textContent = text; return e; };
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img", "aria-label": label + " per day, last 30 days" });
+  for (let i = 0; i <= ticks; i++) {
+    const v = top * i / ticks, y = T + ph - ph * i / ticks;
+    svg.append(el("line", { class: "grid", x1: L, x2: W - R, y1: y, y2: y }));
+    svg.append(el("text", { class: "ax", x: L - 8, y: y + 4, "text-anchor": "end" }, fmt(m === "bytes_out" ? v : Math.round(v))));
+  }
+  const tip = $("sTip"), box = $("sChart");
+  days.forEach((x, i) => {
+    const v = x.v[m] || 0, hgt = v ? Math.max(2, ph * v / top) : 0;
+    const cx = L + band * i + band / 2, x0 = cx - bw / 2, y0 = T + ph - hgt;
+    const r = Math.min(4, hgt, bw / 2);
+    const g = el("g", {});
+    const hit = el("rect", { class: "hit", x: L + band * i, y: T, width: band, height: ph });
+    g.append(hit);
+    if (hgt > 0) {   // rounded data-end, square at the baseline
+      g.append(el("path", { class: "col", d: `M${x0},${T + ph} V${y0 + r} Q${x0},${y0} ${x0 + r},${y0} H${x0 + bw - r} Q${x0 + bw},${y0} ${x0 + bw},${y0 + r} V${T + ph} Z` }));
+    }
+    if (i === 29 || (W >= 560 ? i % 5 === 4 : i % 10 === 9)) {
+      svg.append(el("text", { class: "ax", x: cx, y: H - 6, "text-anchor": "middle" },
+        i === 29 ? "today" : x.d.toLocaleDateString(undefined, { month: "short", day: "numeric" })));
+    }
+    hit.addEventListener("mouseenter", () => {
+      tip.replaceChildren(h("b", {}, x.d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })),
+        h("div", {}, fmtNum(x.v.archives) + " archives, " + fmtNum(x.v.files) + " files"),
+        h("div", {}, fmtSize(x.v.bytes_out) + " extracted"),
+        x.v.failed ? h("div", { class: "muted" }, fmtNum(x.v.failed) + " failed") : "");
+      tip.style.display = "block";
+      const bx = box.getBoundingClientRect(), sx = bx.width / W;
+      let left = cx * sx + 12; if (left + tip.offsetWidth > bx.width) left = cx * sx - tip.offsetWidth - 12;
+      tip.style.left = Math.max(0, left) + "px"; tip.style.top = "10px";
+      const c = g.querySelector(".col"); if (c) c.classList.add("hover");
+    });
+    hit.addEventListener("mouseleave", () => { tip.style.display = "none"; const c = g.querySelector(".col"); if (c) c.classList.remove("hover"); });
+    svg.append(g);
+  });
+  box.querySelector("svg")?.remove();
+  box.prepend(svg);
+  $("sTable").replaceChildren(...days.slice().reverse().map((x) => h("tr", {},
+    h("td", {}, x.d.toLocaleDateString()), h("td", {}, fmtNum(x.v.archives)), h("td", {}, fmtNum(x.v.files)),
+    h("td", {}, fmtSize(x.v.bytes_out)), h("td", {}, fmtNum(x.v.failed)))));
+}
+
+function renderTypes() {
+  const st = statsData, box = $("sTypes"); box.replaceChildren();
+  const rows = Object.entries(st.types).sort((a, b) => b[1] - a[1]);
+  const total = rows.reduce((a, r) => a + r[1], 0);
+  if (!rows.length) { box.append(h("div", { class: "muted small", style: "grid-column:1/-1" }, "Nothing extracted yet.")); return; }
+  const max = rows[0][1];
+  for (const [t, n] of rows) {
+    box.append(h("span", { class: "path" }, "." + t),
+      h("div", { class: "track" }, h("div", { class: "fill", style: "width:" + (100 * n / max) + "%" })),
+      h("span", { class: "n" }, fmtNum(n) + " (" + Math.round(100 * n / total) + "%) - " + fmtSize(st.type_bytes[t] || 0)));
+  }
+}
+
+function renderRecords() {
+  const st = statsData, r = st.records, box = $("sRecords"); box.replaceChildren();
+  const busiest = Object.entries(st.days).sort((a, b) => b[1].archives - a[1].archives)[0];
+  const name = (p) => h("span", { class: "path muted small", title: p }, p.split("/").pop());
+  const rows = [];
+  if (r.largest) rows.push(["Largest archive", fmtSize(r.largest.value), name(r.largest.path)]);
+  if (r.most_files) rows.push(["Most files", fmtNum(r.most_files.value) + " files", name(r.most_files.path)]);
+  if (r.fastest) rows.push(["Fastest", fmtSize(r.fastest.value) + "/s", name(r.fastest.path)]);
+  if (busiest && busiest[1].archives) rows.push(["Busiest day", fmtNum(busiest[1].archives) + " archives",
+    h("span", { class: "muted small" }, new Date(busiest[0] + "T12:00:00").toLocaleDateString() + " - " + fmtSize(busiest[1].bytes_out))]);
+  if (!rows.length) { box.append(h("div", { class: "muted small" }, "Records appear after the first extraction.")); return; }
+  for (const [a, b, c] of rows) box.append(h("span", { class: "muted" }, a), h("b", {}, b), c);
+}
+
+document.querySelectorAll("#sMetric button").forEach((b) => b.addEventListener("click", () => {
+  statsMetric = b.dataset.m;
+  try { localStorage.setItem("ae.statsMetric", statsMetric); } catch (e) { /* ignore */ }
+  if (statsData) renderStats();
+}));
+let resetArmed = null;
+$("sReset").addEventListener("click", async () => {
+  if (!resetArmed) {
+    $("sReset").textContent = "Click again to reset everything";
+    resetArmed = setTimeout(() => { resetArmed = null; $("sReset").textContent = "Reset statistics"; }, 4000);
+    return;
+  }
+  clearTimeout(resetArmed); resetArmed = null; $("sReset").textContent = "Reset statistics";
+  await post("/api/stats/reset");
+  loadStats();
+});
+setInterval(() => { if ($("tab-stats").classList.contains("on")) loadStats().catch(() => {}); }, 10000);
+let resizeT = null;
+window.addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTimeout(() => { if (statsData && $("tab-stats").classList.contains("on")) renderChart(); }, 150); });
 
 // ---------------------------------------------------------------- go
 loadSettings().catch((e) => banner("bad", "Could not load settings: " + e.message));
