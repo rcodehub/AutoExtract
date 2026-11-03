@@ -208,7 +208,7 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
         <div class="field"><label for="threads_in">Threads</label><input type="number" class="num" id="threads_in" min="1" max="32">
           <div class="hint">Archives extracted at the same time within one folder. 2-4 is usually best on spinning disks.</div></div>
         <div class="field"><label for="min_age_minutes">Skip archives newer than (minutes)</label><input type="number" class="num" id="min_age_minutes" min="0">
-          <div class="hint">Avoids touching files that are still downloading or copying. 0 = no limit.</div></div>
+          <div class="hint">Leaves archives that changed in the last N minutes for a later scan, so a download or copy that is still in progress is not extracted half-written. Archives that came out of another archive are never skipped. Skipped files are listed in the log. 0 = never skip (fine if your downloader only puts finished files in the scanned folder).</div></div>
         <div class="field"><label for="max_passes">Max nested levels per folder</label><input type="number" class="num" id="max_passes" min="1" max="100">
           <div class="hint">Safety cap for archives inside archives.</div></div>
       </div>

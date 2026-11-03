@@ -271,11 +271,36 @@ def test_volumes():
 
 
 
+def test_nested_remembered_between_runs():
+    """A nested archive left behind by an earlier run (e.g. it failed then) must not be skipped
+    later just because its own date is recent."""
+    work, eng = fresh()
+    src = os.path.join(work, "src")
+    os.makedirs(src)
+    outer = f"{src}/outer.zip"
+    make_zip(outer, {"inner.zip": b"PK\x03\x04 broken for now" * 20})   # entry date = now
+    past = time.time() - 3600
+    os.utime(outer, (past, past))
+    s = run(eng, base_cfg(sources=[src], min_age_minutes=10))
+    check("remembered: run 1 extracts outer, inner fails", "inner.zip" in tree(src) and s["failed"] == 1, s)
+    make_zip(f"{src}/inner.zip", {"deep.txt": "d"})                     # fixed, still a recent date
+    eng2 = Engine(os.path.join(work, "cfg", "logs"), os.path.join(work, "cfg", "history.json"))  # new process
+    s = run(eng2, base_cfg(sources=[src], min_age_minutes=10))
+    t = tree(src)
+    check("remembered: run 2 extracts it despite the recent date", "deep.txt" in t and "inner.zip" not in t, (t, s))
+    make_zip(f"{src}/fresh.zip", {"f.txt": "f"})                         # a real new download
+    s = run(eng2, base_cfg(sources=[src], min_age_minutes=10))
+    check("remembered: genuinely new downloads are still skipped and logged", "fresh.zip" in tree(src)
+          and s["deferred"] == 1 and any("Skipped for now" in m["msg"] for m in eng2.log_since(0)), s)
+    shutil.rmtree(work)
+
+
+
 if __name__ == "__main__":
     print("tools:", {k: bool(v) for k, v in Engine(tempfile.mkdtemp(), os.devnull).tools.items()})
     for fn in (test_settings, test_nested_delete_and_perms, test_move_mode, test_dry_run,
                test_min_age, test_excluded_and_stop, test_parallel_same_names, test_parts_spread_over_zips,
-               test_broken_archive, test_volumes):
+               test_broken_archive, test_volumes, test_nested_remembered_between_runs):
         fn()
     print("\nALL PASSED" if not FAILS else f"\nFAILED: {FAILS}")
     sys.exit(1 if FAILS else 0)

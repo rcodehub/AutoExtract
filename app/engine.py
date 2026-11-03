@@ -8,6 +8,7 @@ and only then descends into the sub-directories.
 import fnmatch
 import logging
 import logging.handlers
+import json
 import os
 import re
 import shutil
@@ -83,6 +84,9 @@ class Engine:
         self.procs = set()
         self.thread = None
         self.history_path = history_path
+        # archives that came out of an archive, remembered between scans: they are complete files,
+        # so the "skip recent files" rule (meant for downloads in progress) never applies to them
+        self.nested_path = os.path.join(os.path.dirname(history_path) or ".", "extracted-archives.json")
         self.tools = which_tools()
 
         self.log_buf = deque(maxlen=2000)
@@ -197,7 +201,7 @@ class Engine:
             self.failures = []
             self.failed_paths = set()
             self.deferred = set()
-            self.nested = set()
+            self.nested = self._load_nested()
             self._slots = [None] * cfg["threads"]
             self.thread.start()
             return True
@@ -263,7 +267,27 @@ class Engine:
         finally:
             self._finish(trigger, dry_run, result, message)
 
+    def _load_nested(self):
+        try:
+            with open(self.nested_path) as f:
+                return set(json.load(f))
+        except (OSError, ValueError, TypeError):
+            return set()
+
+    def _save_nested(self):
+        with self.lock:
+            keep = sorted(p for p in self.nested if os.path.exists(p))[-20000:]
+        try:
+            tmp = self.nested_path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(keep, f)
+            os.replace(tmp, self.nested_path)
+        except OSError as e:
+            self.log("warn", f"Could not save {self.nested_path}: {e}")
+
     def _finish(self, trigger, dry_run, result, message):
+        if not dry_run:
+            self._save_nested()
         with self.lock:
             st = self.status
             st["finished_at"] = time.time()
@@ -306,10 +330,16 @@ class Engine:
         age = cfg["min_age_minutes"]
         if age <= 0 or path in self.nested:   # the age rule is for downloads, not extracted files
             return True
-        ok = (time.time() - self._group_mtime(path)) >= age * 60
+        changed = self._group_mtime(path)
+        ok = (time.time() - changed) >= age * 60
         if not ok:
             with self.lock:
+                new = path not in self.deferred
                 self.deferred.add(path)
+            if new:
+                mins = max(0, (time.time() - changed) / 60)
+                self.log("info", f"Skipped for now (changed {mins:.0f} min ago, could still be downloading; "
+                                 f"setting: skip archives newer than {age} min): {path}")
         return ok
 
     def _register(self, path):
