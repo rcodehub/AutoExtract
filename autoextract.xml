@@ -11,7 +11,7 @@
   <Support>https://github.com/rcodehub/AutoExtract/issues</Support>
   <Project>https://github.com/rcodehub/AutoExtract</Project>
   <ReadMe>https://github.com/rcodehub/AutoExtract/blob/main/README.md</ReadMe>
-  <Overview>Scans your folders on a schedule and automatically extracts zip, rar, 7z and tar archives into the folder they are in, then extracts any archives found inside those, and cleans up (deletes or moves) the processed archives and junk files such as *.diz. Works one folder at a time, with parallel extraction inside a folder, a live status page, and a settings page for every option. Created entirely by AI (Claude). It has been tested, but not in every situation - do your own due diligence before relying on it with data you cannot replace, and before exposing it to the internet.</Overview>
+  <Overview>Scans a folder on a schedule and automatically extracts zip, rar, 7z and tar archives (including multi-part sets and archives inside archives) into the folder they are in, then deletes the processed archives and junk files such as *.diz, or moves them to a trash folder. Web UI with live status, settings, scan history, statistics and themes. Created entirely by AI (Claude). It has been tested, but not in every situation - do your own due diligence before relying on it with data you cannot replace, and before exposing it to the internet.</Overview>
   <Category>Tools:Utilities</Category>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/rcodehub/Unraid-CA-Apps/refs/heads/main/templates/autoextract.xml</TemplateURL>
@@ -19,15 +19,15 @@
   <ExtraParams>--security-opt=no-new-privileges:true</ExtraParams>
   <PostArgs/>
   <CPUset/>
-  <Date>2026-11-02</Date>
+  <Date>2026-11-03</Date>
   <DonateText/>
   <DonateLink/>
   <Requires/>
-  <Config Name="Web UI port" Target="8080" Default="8844" Mode="tcp" Description="Port for the web UI (status + settings)." Type="Port" Display="always" Required="true" Mask="false">8844</Config>
-  <Config Name="App data" Target="/data" Default="/mnt/user/appdata/autoextract" Mode="rw" Description="Container Path must be /data. Settings (settings.json), scan history, logs and the login key are stored here, so they survive updates and restarts." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/autoextract</Config>
-  <Config Name="Folder to scan" Target="/downloads" Default="/mnt/user/downloads" Mode="rw" Description="Container Path must be /downloads. Host Path = the share on your server to scan, e.g. /mnt/user/downloads. Needs read/write. It is set as the folder to scan from the first start." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/downloads</Config>
-  <Config Name="Trash folder (optional)" Target="/trash" Default="" Mode="rw" Description="Optional. Container Path must be /trash. If you set a Host Path (e.g. /mnt/user/trash), processed archives and junk files are MOVED here instead of deleted. Must be its own share/folder - not inside the folder to scan, and not a parent of it. Use the same kind of host path as the scan folder (both /mnt/user/... or both /mnt/diskN/...)." Type="Path" Display="always" Required="false" Mask="false"/>
-  <Config Name="Timezone" Target="TZ" Default="America/New_York" Mode="" Description="Used for the times shown in logs." Type="Variable" Display="always" Required="false" Mask="false">America/New_York</Config>
-  <Config Name="UI username" Target="UI_USERNAME" Default="admin" Mode="" Description="Login for the web UI (used only when a password is set)." Type="Variable" Display="always" Required="false" Mask="false">admin</Config>
-  <Config Name="UI password" Target="UI_PASSWORD" Default="" Mode="" Description="Set a password to require a login for the web UI. Strongly recommended." Type="Variable" Display="always" Required="false" Mask="true"/>
+  <Config Name="Web UI port" Target="8080" Default="8844" Mode="tcp" Description="Port for the web UI." Type="Port" Display="always" Required="true" Mask="false">8844</Config>
+  <Config Name="App data" Target="/data" Default="/mnt/user/appdata/autoextract" Mode="rw" Description="Settings, history, statistics and logs. Keep the Container Path /data." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/autoextract</Config>
+  <Config Name="Folder to scan" Target="/downloads" Default="/mnt/user/downloads" Mode="rw" Description="The share to scan (read/write), e.g. /mnt/user/downloads. Keep the Container Path /downloads." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/downloads</Config>
+  <Config Name="Trash folder (optional)" Target="/trash" Default="" Mode="rw" Description="Optional, e.g. /mnt/user/trash. If set, processed archives and junk are moved here instead of deleted. Must not be inside the folder to scan (or a parent of it). Keep the Container Path /trash." Type="Path" Display="always" Required="false" Mask="false"/>
+  <Config Name="Timezone" Target="TZ" Default="America/New_York" Mode="" Description="Timezone for the times shown in logs." Type="Variable" Display="always" Required="false" Mask="false">America/New_York</Config>
+  <Config Name="UI username" Target="UI_USERNAME" Default="admin" Mode="" Description="Login name for the web UI (only used when a password is set). Default admin." Type="Variable" Display="always" Required="false" Mask="false">admin</Config>
+  <Config Name="UI password" Target="UI_PASSWORD" Default="" Mode="" Description="Set a password to require a login for the web UI. Blank = no login." Type="Variable" Display="always" Required="false" Mask="true"/>
 </Container>

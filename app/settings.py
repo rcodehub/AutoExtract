@@ -1,4 +1,4 @@
-"""Settings: defaults, first-run seeding from environment variables, validation, storage."""
+"""Settings: defaults, first-start values from the mapped folders, validation, storage."""
 import json
 import os
 import re
@@ -7,7 +7,7 @@ import threading
 import mounts
 
 # App data: settings.json, history, logs and the login key. Mapped to e.g. /mnt/user/appdata/autoextract.
-CONFIG_DIR = os.environ.get("DATA_DIR") or os.environ.get("CONFIG_DIR") or "/data"
+CONFIG_DIR = os.environ.get("DATA_DIR") or "/data"
 SETTINGS_PATH = os.path.join(CONFIG_DIR, "settings.json")
 
 DEFAULTS = {
@@ -35,55 +35,14 @@ DEFAULTS = {
 _lock = threading.Lock()
 
 
-def _env_list(name):
-    v = os.environ.get(name, "")
-    return [x.strip() for x in re.split(r"[,\n]", v) if x.strip()]
-
-
-def _env_bool(name, default):
-    v = os.environ.get(name)
-    if v is None or v == "":
-        return default
-    return v.strip().lower() in ("1", "true", "yes", "on")
-
-
-def _env_int(name, default):
-    try:
-        return int(os.environ[name])
-    except (KeyError, ValueError):
-        return default
-
-
 def env_defaults():
-    """First-run settings. The mapped folders decide the paths; optional environment variables
-    (handy for docker-compose) can override them. After the first start the Settings page wins."""
+    """First-start settings, from the folders mapped in the template: /downloads is scanned, and if
+    /trash is mapped, processed archives and junk are moved there instead of deleted."""
     d = dict(DEFAULTS)
+    d["sources"] = mounts.suggested_sources(CONFIG_DIR)
     move = mounts.suggested_move_dir(CONFIG_DIR)
-    if move:                       # a processed folder was mapped: move things there by default
+    if move:
         d.update(move_dir=move, archive_mode="move", junk_mode="move")
-    if _env_list("SOURCE_DIRS"):
-        d["sources"] = _env_list("SOURCE_DIRS")
-    else:   # nothing specified: offer every folder that was mapped into the container
-        d["sources"] = mounts.suggested_sources(CONFIG_DIR)
-    d["schedule_enabled"] = _env_bool("SCHEDULE_ENABLED", d["schedule_enabled"])
-    d["interval_minutes"] = _env_int("INTERVAL_MINUTES", d["interval_minutes"])
-    d["run_on_start"] = _env_bool("RUN_ON_START", d["run_on_start"])
-    d["threads"] = _env_int("THREADS", d["threads"])
-    d["min_age_minutes"] = _env_int("MIN_AGE_MINUTES", d["min_age_minutes"])
-    if _env_list("JUNK_PATTERNS"):
-        d["junk_patterns"] = _env_list("JUNK_PATTERNS")
-    for k in ("archive_mode", "junk_mode"):
-        v = os.environ.get(k.upper(), "").strip().lower()
-        if v in ("delete", "move"):
-            d[k] = v
-    d["move_dir"] = os.environ.get("MOVE_DIR", d["move_dir"]).strip()
-    d["set_perms"] = _env_bool("SET_PERMS", d["set_perms"])
-    d["file_mode"] = os.environ.get("FILE_MODE", d["file_mode"]).strip() or d["file_mode"]
-    d["dir_mode"] = os.environ.get("DIR_MODE", d["dir_mode"]).strip() or d["dir_mode"]
-    if os.environ.get("PUID") or os.environ.get("PGID"):
-        d["chown_enabled"] = True
-        d["uid"] = _env_int("PUID", d["uid"])
-        d["gid"] = _env_int("PGID", d["gid"])
     return d
 
 

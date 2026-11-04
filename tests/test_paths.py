@@ -41,7 +41,7 @@ mi_path = os.path.join(root, "mountinfo")
 open(mi_path, "w").write(info)
 
 os.environ.update(MOUNTINFO_PATH=mi_path, DATA_DIR=cfg, DOWNLOADS_DIR=dl, TRASH_DIR=proc, NO_SCHEDULER="1")
-for k in ("SOURCE_DIRS", "UI_PASSWORD", "UI_USERNAME"):
+for k in ("UI_PASSWORD", "UI_USERNAME"):
     os.environ.pop(k, None)
 for m in ("mounts", "settings", "engine", "main"):
     sys.modules.pop(m, None)
@@ -85,7 +85,7 @@ check("source inside the move folder is refused", any("must not be inside the mo
 s, e = settings.validate({"sources": [dl], "archive_mode": "move", "move_dir": proc})
 check("separate folders are accepted", not e, e)
 
-# first-run seeding uses detected mounts when SOURCE_DIRS is not set
+# first-start settings come from the mapped folders
 os.remove(os.path.join(cfg, "settings.json")) if os.path.exists(os.path.join(cfg, "settings.json")) else None
 seed = settings.load()
 check("first run: source is /downloads",
