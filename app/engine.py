@@ -123,6 +123,7 @@ class Engine:
         self.failures = []
         self.failed_paths = set()
         self.deferred = set()        # archives skipped because they are too recent
+        self.deferred_ready = {}     # archive -> time it is old enough to be extracted
         self.nested = set()          # archives that came out of an archive in this run (never too recent)
         self.kept = set()
         self._mounts = []
@@ -202,9 +203,25 @@ class Engine:
             s["done"] = s["extracted"] + s["failed"]
             s["remaining"] = max(0, s["found"] - s["done"])
             s["deferred"] = len(self.deferred)
+            s["waiting"] = self._waiting()
             s["failures"] = failed[-50:]
             s["tools"] = self.tools
             return s
+
+    def _waiting(self):
+        """Folders with archives skipped as too recent: [{dir, count, names, ready_at}], soonest first."""
+        groups = {}
+        for p in self.deferred:
+            g = groups.setdefault(os.path.dirname(p), {"dir": os.path.dirname(p), "count": 0, "names": [], "ready_at": None})
+            g["count"] += 1
+            g["names"].append(os.path.basename(p))
+            r = self.deferred_ready.get(p)
+            if r and (g["ready_at"] is None or r > g["ready_at"]):
+                g["ready_at"] = r            # the whole folder is ready when its newest archive is
+        out = sorted(groups.values(), key=lambda g: (g["ready_at"] or 0, g["dir"]))
+        for g in out:
+            g["names"] = sorted(g["names"])[:5]
+        return out[:100]
 
     # ------------------------------------------------------------ control
     def start(self, cfg, trigger="manual", dry_run=False, oneoff=None):
@@ -222,6 +239,7 @@ class Engine:
             self.failures = []
             self.failed_paths = set()
             self.deferred = set()
+            self.deferred_ready = {}
             self.nested = self._load_nested()
             self.kept = set()            # one-off "keep": extracted, left in place, not extracted again in this run
             self._slots = [None] * cfg["threads"]
@@ -389,6 +407,7 @@ class Engine:
             with self.lock:
                 new = path not in self.deferred
                 self.deferred.add(path)
+                self.deferred_ready[path] = changed + age * 60
             if new:
                 mins = max(0, (time.time() - changed) / 60)
                 self.log("info", f"Skipped for now (changed {mins:.0f} min ago, could still be downloading; "
@@ -399,6 +418,7 @@ class Engine:
         with self.lock:
             self.seen.add(path)
             self.deferred.discard(path)
+            self.deferred_ready.pop(path, None)
 
     def _prescan(self, root, cfg):
         for dirpath, dirnames, filenames in os.walk(root):

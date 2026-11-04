@@ -249,6 +249,11 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
         <tbody id="threads"><tr><td colspan="3" class="idle">Not running</td></tr></tbody></table>
     </section>
 
+    <section class="card" id="waitCard" hidden>
+      <h2>Waiting <span class="muted small">(changed too recently - may still be downloading)</span></h2>
+      <div id="waiting"></div>
+    </section>
+
     <section class="card" id="failCard" hidden>
       <h2>Failed archives <span class="muted small">(left in place)</span></h2>
       <div id="fails"></div>
@@ -520,6 +525,24 @@ function showBuild(b) {
   }
 }
 
+function renderWaiting(list, sched) {
+  $("waitCard").hidden = !list.length;
+  const key = JSON.stringify(list) + Math.floor(Date.now() / 30000);   // refresh the "in N min" text every 30 s
+  if ($("waiting").dataset.key === key) return;
+  $("waiting").dataset.key = key;
+  const now = Date.now() / 1000 + serverSkew;
+  const when = (t) => {
+    if (!t) return "";
+    const m = Math.ceil((t - now) / 60);
+    const ready = m <= 0 ? "old enough now" : "old enough in " + (m < 60 ? m + " min" : Math.floor(m / 60) + " h " + (m % 60) + " min");
+    return ready + (sched && sched.enabled ? " - picked up by the next scan after that" : " - run a scan after that");
+  };
+  $("waiting").replaceChildren(...list.map((g) => h("div", { class: "fail" },
+    h("div", { class: "path" }, g.dir),
+    h("div", { class: "small muted" }, g.count + " archive" + (g.count === 1 ? "" : "s") + ": " + g.names.join(", ")
+      + (g.count > g.names.length ? ", ..." : "") + (g.ready_at ? " - " + when(g.ready_at) : "")))));
+}
+
 function renderStatus(d) {
   showBuild(d.build);
   const e = d.engine, s = d.schedule;
@@ -565,6 +588,7 @@ function renderStatus(d) {
 
   // failures
   $("failCard").hidden = !e.failures.length;
+  renderWaiting(e.waiting || [], s);
   const fl = $("fails"); fl.replaceChildren();
   for (const f of e.failures) fl.append(h("div", { class: "fail" }, h("div", { class: "path" }, f.path), h("div", { class: "err" }, f.error)));
 }
@@ -892,8 +916,9 @@ function renderStats() {
     tile("Files extracted", fmtNum(t.files), t.archives ? "about " + fmtNum(Math.round(t.files / t.archives)) + " per archive" : ""),
     tile("Archive data processed", fmtSize(t.bytes_in), t.bytes_in ? "unpacked to " + (t.bytes_out / t.bytes_in).toFixed(2) + "x its size" : ""),
     tile("Space freed", fmtSize(t.freed), "archives and junk deleted"),
-    tile("Moved to trash", fmtSize(t.moved), "archives and junk moved"),
-    tile("Moved to Recycle Bin", fmtSize(t.recycled || 0), "archives and junk recycled"),
+    tile("Moved to Recycle Bin / trash", fmtSize((t.recycled || 0) + t.moved),
+      [t.recycled ? fmtSize(t.recycled) + " to the Recycle Bin" : "", t.moved ? fmtSize(t.moved) + " to the move folder" : ""]
+        .filter(Boolean).join(", ") || "archives and junk moved, not deleted"),
     tile("Junk files cleaned", fmtNum(t.junk), t.junk_bytes ? fmtSize(t.junk_bytes) : ""),
     tile("Success rate", attempts ? (100 * t.archives / attempts).toFixed(attempts > t.archives ? 1 : 0) + "%" : "-", fmtNum(t.failed) + " failed"),
     tile("Scans run", fmtNum(t.runs), ""),

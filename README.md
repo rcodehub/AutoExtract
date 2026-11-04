@@ -43,7 +43,7 @@ Only change the *Host Path* side of the paths. On first start `/downloads` is se
 
 ## Web UI
 
-- **Status** – next/last scan, progress, what each thread is extracting, failed archives and a live log. Buttons: **Run now**, **Dry run** (shows what would happen without changing anything), **Extract folder…** (a one-off job on any folder you pick, with or without sub-folders; you choose for that run whether the archives go to the Recycle Bin, are deleted, moved or kept), **Stop**.
+- **Status** – next/last scan, progress, what each thread is extracting, failed archives, folders waiting because their archives changed too recently (with when they'll be picked up) and a live log. Buttons: **Run now**, **Dry run** (shows what would happen without changing anything), **Extract folder…** (a one-off job on any folder you pick, with or without sub-folders; you choose for that run whether the archives go to the Recycle Bin, are deleted, moved or kept), **Stop**.
 - **Settings** – all options below, with a folder picker and live checks that show each folder's real location on the server.
 - **History** – every scan with counts, data size and failures.
 - **Stats** – lifetime totals (data and files extracted, space freed, success rate, speed), a 30-day chart, archive types and records.

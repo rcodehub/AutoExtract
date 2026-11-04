@@ -151,6 +151,10 @@ def test_min_age():
     t = tree(src)
     check("min age: old extracted, new skipped", "o.txt" in t and "new.zip" in t and "n.txt" not in t, t)
     check("min age: deferred counted", s["deferred"] == 1, s)
+    w = s.get("waiting") or []
+    check("min age: waiting folders listed with the archive and when it is ready",
+          len(w) == 1 and w[0]["dir"] == src and w[0]["names"] == ["new.zip"] and w[0]["count"] == 1
+          and abs(w[0]["ready_at"] - (os.path.getmtime(f"{src}/new.zip") + 600)) < 2, w)
     check("min age: nested archive with a recent date is still extracted",
           "deep.txt" in t and "inner.zip" not in t, t)
     shutil.rmtree(work)
