@@ -54,6 +54,9 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
             type=sha
+            type=raw,value=build-${{ github.run_number }}
+      - id: build
+        run: echo "date=$(date -u +%Y-%m-%dT%H:%MZ)" >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@v6
         with:
           context: .
@@ -61,3 +64,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_NUMBER=${{ github.run_number }}
+            BUILD_SHA=${{ github.sha }}
+            BUILD_DATE=${{ steps.build.outputs.date }}

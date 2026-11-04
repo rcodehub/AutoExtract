@@ -15,6 +15,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ /app/
 
+# Set by the publish workflow (GitHub Actions run number, commit, time); shown in the web UI
+ARG BUILD_NUMBER=dev
+ARG BUILD_SHA=
+ARG BUILD_DATE=
+ENV BUILD_NUMBER=$BUILD_NUMBER BUILD_SHA=$BUILD_SHA BUILD_DATE=$BUILD_DATE
+
 ENV DATA_DIR=/data \
     PORT=8080 \
     PYTHONUNBUFFERED=1

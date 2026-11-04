@@ -36,6 +36,8 @@ h1 { font-size: 18px; margin: 0; letter-spacing: .2px; }
 .pill.run { background: var(--accent); color: var(--accent-ink); }
 .pill.stop { background: var(--warn-soft); color: var(--warn); }
 .spacer { flex: 1; }
+.buildtag { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.buildtag a { color: inherit; text-decoration: none; } .buildtag a:hover { text-decoration: underline; }
 button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text);
   padding: 7px 14px; border-radius: var(--radius-sm, 8px); cursor: pointer; }
 button:hover:not(:disabled) { border-color: var(--accent); }
@@ -195,6 +197,7 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
     <div class="top">
       <h1>AutoExtract</h1>
       <span id="pill" class="pill">Idle</span>
+      <span id="build" class="buildtag"></span>
       <span class="spacer"></span>
       <button id="btnRun" class="primary">Run now</button>
       <button id="btnDry">Dry run</button>
@@ -485,7 +488,22 @@ async function pollStatus() {
   } catch (e) { /* next poll */ }
 }
 
+let buildShown = "";
+function showBuild(b) {
+  const key = JSON.stringify(b || {});
+  if (!b || key === buildShown) return;
+  buildShown = key;
+  const el = $("build"); el.replaceChildren();
+  if (b.sha) {
+    el.append(h("a", { href: "https://github.com/rcodehub/AutoExtract/commit/" + b.sha, target: "_blank", rel: "noopener",
+      title: "Commit " + b.sha + (b.date ? ", built " + new Date(b.date).toLocaleString() : "") }, "Build " + b.number));
+  } else {
+    el.append(h("span", { title: "Not built by the publish workflow" }, "Build " + b.number));
+  }
+}
+
 function renderStatus(d) {
+  showBuild(d.build);
   const e = d.engine, s = d.schedule;
   running = e.state !== "idle";
   const pill = $("pill");

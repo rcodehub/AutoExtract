@@ -75,6 +75,10 @@ Archives in a directory are extracted in parallel. Each one goes into its own hi
 
 Extractors are RarLab `unrar` for RAR, 7-Zip for 7z and split archives, `unzip` for zip and GNU `tar` for tarballs. If one fails, 7-Zip tries next. If an archive still fails, it is retried once on its own, then left in place and listed with the reason (damaged, missing part, wrong password, …).
 
+## Versions
+
+The build number (top left of the web UI, and in the container log at start) goes up with every published image. Hover it to see the commit and build time. Images are tagged `latest` and `build-N`, so you can pin a specific build by setting the repository to `ghcr.io/rcodehub/autoextract:build-N`.
+
 ## Docker Compose
 
 See [`docker-compose.yml`](docker-compose.yml).

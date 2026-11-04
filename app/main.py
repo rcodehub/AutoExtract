@@ -21,6 +21,10 @@ app = Flask(__name__, static_folder="static", static_url_path="/static")
 
 # ---------------------------------------------------------------- login
 # Set UI_PASSWORD to require a login. An empty UI_USERNAME falls back to "admin".
+BUILD = {"number": os.environ.get("BUILD_NUMBER") or "dev", "sha": (os.environ.get("BUILD_SHA") or "")[:7],
+         "date": os.environ.get("BUILD_DATE") or ""}
+print(f"[build] AutoExtract build {BUILD['number']}" + (f" ({BUILD['sha']}, {BUILD['date']})" if BUILD["sha"] else ""),
+      flush=True)
 UI_USER = (os.environ.get("UI_USERNAME") or "admin").strip()
 UI_PASS = os.environ.get("UI_PASSWORD", "")
 AUTH_ON = bool(UI_PASS)
@@ -170,7 +174,7 @@ def index():
 
 @app.route("/health")
 def health():
-    return jsonify(ok=True)
+    return jsonify(ok=True, build=BUILD["number"])
 
 
 @app.route("/api/status")
@@ -180,6 +184,7 @@ def api_status():
         engine=engine.snapshot(),
         schedule={"enabled": cfg["schedule_enabled"], "interval": cfg["interval_minutes"],
                   "next_run": scheduler.next_run},
+        build=BUILD,
         now=time.time(),
     )
 
