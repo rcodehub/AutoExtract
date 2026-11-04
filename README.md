@@ -77,7 +77,7 @@ Extractors are RarLab `unrar` for RAR, 7-Zip for 7z and split archives, `unzip` 
 
 ## Versions
 
-The build number (top left of the web UI, and in the container log at start) goes up with every published image. Hover it to see the commit and build time. Images are tagged `latest` and `build-N`, so you can pin a specific build by setting the repository to `ghcr.io/rcodehub/autoextract:build-N`.
+The build number (top left of the web UI, and in the container log at start) goes up with every published image. Hover it to see the commit and build time. What changed is in [CHANGELOG.md](CHANGELOG.md), and the newest entries are also shown in Community Applications. Images are tagged `latest` and `build-N`, so you can pin a specific build by setting the repository to `ghcr.io/rcodehub/autoextract:build-N`.
 
 ## Docker Compose
 

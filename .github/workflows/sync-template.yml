@@ -1,14 +1,16 @@
 name: Sync template to Community Apps repo
 
-# Copies autoextract.xml into rcodehub/Unraid-CA-Apps (templates/autoextract.xml)
-# whenever it changes on main. Needs a repository secret named CA_REPO_TOKEN:
-# a fine-grained personal access token with "Contents: Read and write" on the
-# Unraid-CA-Apps repository only.
+# After every successful image publish, stamps autoextract.xml with the publish date, the build
+# number and the newest CHANGELOG.md entries (<Date> and <Changes>, shown in Community Applications)
+# and copies it to rcodehub/Unraid-CA-Apps (templates/autoextract.xml).
+# Needs a repository secret named CA_REPO_TOKEN: a fine-grained personal access token with
+# "Contents: Read and write" on the Unraid-CA-Apps repository only.
 
 on:
-  push:
+  workflow_run:
+    workflows: ["Build and publish image"]
+    types: [completed]
     branches: [main]
-    paths: [autoextract.xml]
   workflow_dispatch:
 
 permissions:
@@ -16,9 +18,12 @@ permissions:
 
 jobs:
   sync:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Check for the token
         env:
@@ -36,9 +41,17 @@ jobs:
           token: ${{ secrets.CA_REPO_TOKEN }}
           path: ca
 
-      - name: Copy template and push
+      - name: Stamp date, build and changes
+        env:
+          BUILD: ${{ github.event.workflow_run.run_number || 'manual' }}
         run: |
           cp autoextract.xml ca/templates/autoextract.xml
+          python3 .github/scripts/stamp_template.py ca/templates/autoextract.xml CHANGELOG.md \
+            "$(TZ=America/New_York date +%Y-%m-%d)" "$BUILD" 4
+          python3 -c "import xml.dom.minidom as m; m.parse('ca/templates/autoextract.xml')"
+
+      - name: Push to Unraid-CA-Apps
+        run: |
           cd ca
           if [ -z "$(git status --porcelain)" ]; then
             echo "Template already up to date"
@@ -47,5 +60,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add templates/autoextract.xml
-          git commit -m "Update autoextract template from ${GITHUB_REPOSITORY}@${GITHUB_SHA::7}"
+          git commit -m "Update autoextract template (build ${{ github.event.workflow_run.run_number || 'manual' }}) from ${GITHUB_REPOSITORY}@$(git -C .. rev-parse --short HEAD)"
           git push origin HEAD:main
