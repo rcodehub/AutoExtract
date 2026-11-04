@@ -186,5 +186,14 @@ sch.tick()
 check("scheduler: manual scan counts as the last scan", abs(sch.next_run - (main.engine.status["finished_at"] + 300)) < 2)
 c.post("/api/settings", json={"sources": [dl], "schedule_enabled": False})
 
+# --- appearance: saved on the server, validated
+d = c.get("/api/ui").get_json()["ui"]
+check("ui: defaults", d["theme"] == "default" and d["width"] == "wide", d)
+r = c.post("/api/ui", json={"theme": "nord", "radius": 99, "density": "spacious", "width": "full", "font": "evil", "x": 1})
+d = c.get("/api/ui").get_json()["ui"]
+check("ui: saved and cleaned", d["theme"] == "nord" and d["radius"] == 24 and d["density"] == "spacious"
+      and d["width"] == "full" and d["font"] == "" and "x" not in d, d)
+check("ui: theme.js reachable", c.get("/static/theme.js").status_code == 200)
+
 print("\nALL PASSED" if not FAILS else f"\nFAILED: {FAILS}")
 sys.exit(1 if FAILS else 0)

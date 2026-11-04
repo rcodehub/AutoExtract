@@ -30,6 +30,10 @@ Multi-part archives are extracted once from the first part, and all parts are cl
 | **History** | Past scans with counts, data size and failures |
 | **Stats** | Lifetime totals - data extracted, archives, files, space freed/moved, junk cleaned, success rate, time and average speed - a 30-day activity chart (archives, data or files per day, with a table view), archive types and records (largest archive, most files, fastest, busiest day). Kept in `/data/stats.json`, survive updates; *Reset statistics* starts over |
 
+On wide screens the page uses the full width: the status page shows progress and threads next to a full-height log, and the settings are laid out in columns.
+
+**Theme** (top right) opens the appearance panel - the same themes as unraid-home: AutoExtract, Unraid orange, Midnight, Nord, Dracula, Solarized, Forest, Rosé, Glass, High contrast and Terminal, each with a light and a dark version - plus corner rounding, spacing, font, shadows and page width (standard / wide / full screen). The look is saved in `/data/ui.json` and used in every browser; light/dark (or auto) is chosen per browser with the ☾/☀ button.
+
 Buttons: **Run now**, **Dry run** (shows what *would* happen, changes nothing - nested archives only show up in a real run), **Stop**.
 
 ## Settings

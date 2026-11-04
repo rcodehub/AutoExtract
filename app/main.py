@@ -1,5 +1,6 @@
 """Web app + scheduler for the Extract Archives container."""
 import hmac
+import json
 import os
 import secrets
 import threading
@@ -67,7 +68,7 @@ def creds_ok(user, password):
 
 @app.before_request
 def require_login():
-    if not AUTH_ON or request.path in ("/health", "/login"):
+    if not AUTH_ON or request.path in ("/health", "/login", "/static/theme.js"):
         return None
     if session.get("ok"):
         return None
@@ -188,6 +189,55 @@ def api_log():
     after = request.args.get("after", 0, type=int)
     entries = engine.log_since(after)
     return jsonify(entries=entries, last=engine.log_seq, cleared=engine.log_cleared)
+
+
+UI_PATH = os.path.join(CONFIG_DIR, "ui.json")
+UI_DEFAULTS = {"theme": "default", "radius": 10, "density": "comfortable", "font": "", "shadow": "none",
+               "width": "wide", "mode": "auto"}
+UI_CHOICES = {"density": ("compact", "comfortable", "spacious"), "font": ("", "system", "rounded", "serif", "mono"),
+              "shadow": ("none", "soft", "strong"), "width": ("standard", "wide", "full"),
+              "mode": ("auto", "light", "dark")}
+UI_THEMES = ("default", "unraid", "midnight", "nord", "dracula", "solarized", "forest", "rose", "glass",
+             "contrast", "terminal")
+
+
+def load_ui():
+    try:
+        with open(UI_PATH) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        data = {}
+    return clean_ui(data if isinstance(data, dict) else {})
+
+
+def clean_ui(data):
+    out = dict(UI_DEFAULTS)
+    for k, choices in UI_CHOICES.items():
+        if data.get(k) in choices:
+            out[k] = data[k]
+    if data.get("theme") in UI_THEMES:
+        out["theme"] = data["theme"]
+    try:
+        out["radius"] = max(0, min(24, int(data.get("radius", out["radius"]))))
+    except (TypeError, ValueError):
+        pass
+    return out
+
+
+@app.route("/api/ui", methods=["GET", "POST"])
+def api_ui():
+    """Look and feel (theme, corners, density, font, shadows, page width, default light/dark mode)."""
+    if request.method == "POST":
+        ui = clean_ui({**load_ui(), **(request.get_json(silent=True) or {})})
+        try:
+            tmp = UI_PATH + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(ui, f, indent=2)
+            os.replace(tmp, UI_PATH)
+        except OSError as e:
+            return jsonify(error=f"Could not save the look: {e}"), 500
+        return jsonify(ok=True, ui=ui)
+    return jsonify(ui=load_ui())
 
 
 @app.route("/api/stats")
