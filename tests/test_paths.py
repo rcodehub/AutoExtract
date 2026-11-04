@@ -195,5 +195,33 @@ check("ui: saved and cleaned", d["theme"] == "nord" and d["radius"] == 24 and d[
       and d["width"] == "full" and d["font"] == "" and "x" not in d, d)
 check("ui: theme.js reachable", c.get("/static/theme.js").status_code == 200)
 
+# --- Recycle Bin and one-off jobs
+d = c.get("/api/settings").get_json()
+rb = d["recycle"][0] if d["recycle"] else {}
+check("recycle: settings page reports each source's bin", rb.get("ok") and rb.get("bin") == os.path.join(dl, ".Recycle.Bin")
+      and rb.get("host") == "/mnt/user/somewhere/.Recycle.Bin", d["recycle"])
+mounts.TRASH_DIR = os.path.join(root, "not-mapped")
+if os.path.exists(os.path.join(cfg, "settings.json")):
+    os.remove(os.path.join(cfg, "settings.json"))
+seed = settings.load()
+check("first start without /trash: Recycle Bin when the share root is reachable",
+      seed["archive_mode"] == "recycle" and seed["junk_mode"] == "recycle", seed)
+mounts.TRASH_DIR = proc
+r = c.post("/api/run-folder", json={"path": "/nope/missing"})
+check("one-off: missing folder refused", r.status_code == 400)
+r = c.post("/api/run-folder", json={"path": cfg})
+check("one-off: app data folder refused", r.status_code == 400)
+r = c.post("/api/run-folder", json={"path": dl, "action": "bogus"})
+check("one-off: unknown action refused", r.status_code == 400)
+pick = os.path.join(root, "pick")
+os.makedirs(pick)
+import zipfile
+with zipfile.ZipFile(os.path.join(pick, "x.zip"), "w") as z:
+    z.writestr("x.txt", "x")
+r = c.post("/api/run-folder", json={"path": pick, "action": "keep", "recursive": False})
+main.engine.thread.join(20)
+check("one-off: runs and keeps the archive", r.status_code == 200 and os.path.isfile(os.path.join(pick, "x.txt"))
+      and os.path.isfile(os.path.join(pick, "x.zip")) and main.engine.history[-1]["trigger"] == "one-off", r.get_json())
+
 print("\nALL PASSED" if not FAILS else f"\nFAILED: {FAILS}")
 sys.exit(1 if FAILS else 0)

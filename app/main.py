@@ -282,8 +282,30 @@ def api_settings():
         tools=engine.tools,
         sources_info={p: mounts.path_info(p, mnt) for p in cfg["sources"]},
         move_info=mounts.path_info(cfg["move_dir"], mnt) if cfg["move_dir"] else None,
+        recycle=[recycle_report(p, mnt) for p in cfg["sources"]],
         auth_enabled=AUTH_ON,
     )
+
+
+def recycle_report(path, mnt):
+    """Where the Recycle Bin for `path` is, on the server and in the container, and how many items it holds."""
+    root, why = mounts.recycle_root(os.path.join(path, "x"), mnt)
+    out = {"source": path, "ok": not why, "why": why, "bin": root, "host": None, "exists": False, "items": None}
+    if root:
+        out["host"] = mounts.path_info(root, mnt)["host"]
+        try:
+            with os.scandir(root) as it:
+                out["items"] = sum(1 for _ in it)
+            out["exists"] = True
+        except OSError:
+            pass
+    return out
+
+
+@app.route("/api/recycle")
+def api_recycle():
+    path = os.path.normpath(request.args.get("path") or "/")
+    return jsonify(info=recycle_report(path, mounts.list_mounts(CONFIG_DIR)))
 
 
 @app.route("/api/mounts")
@@ -308,6 +330,39 @@ def api_run():
     if engine.running:
         return jsonify(ok=False, error="A scan is already running."), 409
     engine.start(cfg, trigger="manual", dry_run=bool(body.get("dry_run")))
+    return jsonify(ok=True)
+
+
+@app.route("/api/run-folder", methods=["POST"])
+def api_run_folder():
+    """One-off job: extract the archives in one folder now (with or without its sub-folders), whatever the
+    configured source folders and schedule say. Uses the saved settings; what happens to the archives can be
+    chosen for this run only (including keep)."""
+    body = request.get_json(silent=True) or {}
+    path = os.path.normpath(str(body.get("path") or ""))
+    if not os.path.isabs(path) or not os.path.isdir(path):
+        return jsonify(ok=False, error="Choose an existing folder (a path inside the container)."), 400
+    if settings._within(path, settings.CONFIG_DIR):
+        return jsonify(ok=False, error="That is the app data folder - choose a folder such as /downloads."), 400
+    if engine.running:
+        return jsonify(ok=False, error="A scan is already running. Wait for it to finish or stop it first."), 409
+    cfg = settings.load()
+    action = str(body.get("action") or "")
+    if action and action not in ("recycle", "delete", "move", "keep"):
+        return jsonify(ok=False, error="Unknown action."), 400
+    if str(body.get("move_dir") or "").strip():
+        cfg["move_dir"] = str(body["move_dir"]).strip()
+    cfg["sources"] = [path]
+    if action and action != "keep":
+        cfg["archive_mode"] = action
+    cfg["min_age_minutes"] = 0              # the user chose this folder on purpose
+    clean, errors = settings.validate(cfg)
+    if errors:
+        return jsonify(ok=False, error="; ".join(errors)), 400
+    if action == "keep":
+        clean["archive_mode"] = "keep"      # one-off only: extract, leave the archives where they are
+    engine.start(clean, trigger="one-off", dry_run=bool(body.get("dry_run")),
+                 oneoff={"path": path, "recursive": body.get("recursive", True) is not False})
     return jsonify(ok=True)
 
 

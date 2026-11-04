@@ -4,7 +4,7 @@ import os
 import threading
 import time
 
-TOTAL_KEYS = ("archives", "files", "bytes_out", "bytes_in", "freed", "moved", "junk", "junk_bytes",
+TOTAL_KEYS = ("archives", "files", "bytes_out", "bytes_in", "freed", "moved", "recycled", "junk", "junk_bytes",
               "failed", "runs", "seconds", "nested")
 DAY_KEYS = ("archives", "files", "bytes_out", "bytes_in", "failed")
 MAX_DAYS = 400
@@ -79,7 +79,9 @@ class Stats:
                 d["bytes_out"] += bytes_out
                 d["bytes_in"] += bytes_in
             tot["seconds"] += seconds
-            tot["freed" if mode == "delete" else "moved"] += bytes_in
+            key = {"delete": "freed", "move": "moved", "recycle": "recycled"}.get(mode)
+            if key:
+                tot[key] += bytes_in
             tot["nested"] += 1 if nested else 0
             self.data["types"][t] = self.data["types"].get(t, 0) + 1
             self.data["type_bytes"][t] = self.data["type_bytes"].get(t, 0) + bytes_out
@@ -96,7 +98,9 @@ class Stats:
         with self.lock:
             self.data["totals"]["junk"] += 1
             self.data["totals"]["junk_bytes"] += size
-            self.data["totals"]["freed" if mode == "delete" else "moved"] += size
+            key = {"delete": "freed", "move": "moved", "recycle": "recycled"}.get(mode)
+            if key:
+                self.data["totals"][key] += size
 
     def failed(self):
         with self.lock:

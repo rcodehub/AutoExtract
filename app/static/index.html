@@ -153,8 +153,8 @@ dialog { border: var(--bw, 1px) solid var(--line); border-radius: var(--radius);
 dialog::backdrop { background: rgba(0,0,0,.5); }
 .dlg-h { padding: 12px 16px; border-bottom: 1px solid var(--line); font-weight: 600; }
 .dlg-b { padding: 8px 8px; max-height: 50vh; overflow: auto; }
-.dlg-b div { padding: 6px 10px; border-radius: 6px; cursor: pointer; font-family: var(--mono); font-size: 13px; }
-.dlg-b div:hover { background: var(--accent-soft); }
+#dlgList > div { padding: 6px 10px; border-radius: 6px; cursor: pointer; font-family: var(--mono); font-size: 13px; }
+#dlgList > div:hover { background: var(--accent-soft); }
 .dlg-f { padding: 12px 16px; border-top: 1px solid var(--line); display: flex; gap: 8px; justify-content: flex-end; align-items: center; }
 .dlg-f .path { margin-right: auto; }
 @media (max-width: 560px) { .top button { padding: 6px 10px; } }
@@ -201,6 +201,7 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
       <span class="spacer"></span>
       <button id="btnRun" class="primary">Run now</button>
       <button id="btnDry">Dry run</button>
+      <button id="btnOne" title="Extract the archives in one folder you pick, right now, independent of the source folders and the schedule">Extract folder…</button>
       <button id="btnStop" class="danger" disabled>Stop</button>
       <button id="btnMode" class="iconbtn" title="Switch light / dark" aria-label="Switch light / dark">☾</button>
       <button id="btnTheme" aria-controls="themePanel" aria-expanded="false">Theme</button>
@@ -311,10 +312,11 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
       <h2>After extracting</h2>
       <div class="two">
         <div class="field"><label for="archive_mode">Archives that extracted fine</label>
-          <select id="archive_mode"><option value="delete">Delete</option><option value="move">Move to the move folder</option></select></div>
+          <select id="archive_mode"><option value="recycle">Move to the share's Recycle Bin</option><option value="delete">Delete</option><option value="move">Move to the move folder</option></select></div>
         <div class="field"><label for="junk_mode">Junk files</label>
-          <select id="junk_mode"><option value="delete">Delete</option><option value="move">Move to the move folder</option></select></div>
+          <select id="junk_mode"><option value="recycle">Move to the share's Recycle Bin</option><option value="delete">Delete</option><option value="move">Move to the move folder</option></select></div>
       </div>
+      <div id="recycleInfo" class="field"></div>
       <div class="field" id="moveField"><label for="move_dir">Move folder</label>
         <div class="row"><input type="text" id="move_dir" placeholder="/trash"><button class="small" id="browseMove">Browse</button></div>
         <div id="moveStatus"></div>
@@ -406,6 +408,22 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
   <div class="tp-foot"><button class="small" id="tpReset">Reset to defaults</button><span class="muted small" id="tpMsg"></span></div>
   <div class="hint" style="margin-top:12px">The look is saved on the server (in /data/ui.json) and used in every browser. Light/dark mode is chosen per browser.</div>
 </aside>
+
+<dialog id="dlgOne">
+  <div class="dlg-h">Extract a folder now</div>
+  <div class="dlg-b" style="max-height:none;padding:12px 16px">
+    <p class="muted small" style="margin:0 0 10px">A one-off job. It ignores the source folders, the schedule and the "skip recent archives" setting, and uses your other settings (junk patterns, permissions...).</p>
+    <div class="field"><label for="onePath">Folder</label>
+      <div class="row"><input type="text" id="onePath" spellcheck="false" placeholder="/downloads/Some Folder"><button class="small" id="oneBrowse" type="button">Browse…</button></div>
+      <div id="oneStatus"></div></div>
+    <div class="check"><input type="checkbox" id="oneRec" checked><div><label for="oneRec">Include sub-folders</label>
+      <div class="hint">Off = only the archives directly in this folder (and whatever comes out of them).</div></div></div>
+    <div class="field"><label for="oneAction">Archives that extracted fine</label>
+      <select id="oneAction"><option value="">Use the setting</option><option value="recycle">Move to the share's Recycle Bin</option><option value="delete">Delete</option><option value="move">Move to the move folder</option><option value="keep">Keep (leave them where they are)</option></select></div>
+    <div id="oneErr" class="missing" hidden></div>
+  </div>
+  <div class="dlg-f"><button id="oneCancel">Cancel</button><button id="oneDry">Dry run</button><button class="primary" id="oneStart">Extract</button></div>
+</dialog>
 
 <dialog id="dlg">
   <div class="dlg-h">Choose a folder</div>
@@ -509,7 +527,7 @@ function renderStatus(d) {
   const pill = $("pill");
   pill.textContent = e.state === "idle" ? "Idle" : e.state === "stopping" ? "Stopping..." : (e.dry_run ? "Dry run" : "Scanning");
   pill.className = "pill" + (e.state === "running" ? " run" : e.state === "stopping" ? " stop" : "");
-  $("btnRun").disabled = $("btnDry").disabled = running;
+  $("btnRun").disabled = $("btnDry").disabled = $("btnOne").disabled = running;
   $("btnStop").disabled = e.state !== "running";
 
   // cards
@@ -580,6 +598,21 @@ async function startRun(dry) {
 }
 $("btnRun").addEventListener("click", () => startRun(false));
 $("btnDry").addEventListener("click", () => startRun(true));
+// ---- one-off folder
+$("btnOne").addEventListener("click", () => { $("oneErr").hidden = true; $("dlgOne").showModal(); });
+$("oneCancel").addEventListener("click", () => $("dlgOne").close());
+bindCheck($("onePath"), $("oneStatus"));
+$("oneBrowse").addEventListener("click", () => pickFolder($("onePath").value || "/", (p) => { $("onePath").value = p; $("onePath").dispatchEvent(new Event("change")); }));
+async function startOne(dry) {
+  $("oneErr").hidden = true;
+  try {
+    await post("/api/run-folder", { path: $("onePath").value.trim(), recursive: $("oneRec").checked,
+      action: $("oneAction").value, dry_run: dry });
+    $("dlgOne").close(); pollStatus();
+  } catch (e) { $("oneErr").textContent = e.message; $("oneErr").hidden = false; }
+}
+$("oneStart").addEventListener("click", () => startOne(false));
+$("oneDry").addEventListener("click", () => startOne(true));
 $("btnStop").addEventListener("click", async () => { await post("/api/stop"); pollStatus(); });
 $("btnLogout").addEventListener("click", () => { location.href = "/logout"; });
 
@@ -653,7 +686,7 @@ async function loadMounts() {
   box.append(h("h3", {}, "Template paths on your server"));
   const hp = h("div", { class: "hostpaths" });
   const byPath = Object.fromEntries(d.mounts.map((m) => [m.path, m]));
-  for (const [cp, label] of [["/downloads", "Folder to scan"], ["/trash", "Trash folder"], [d.config_dir, "App data"]]) {
+  for (const [cp, label] of [["/downloads", "Folder to scan"], ["/trash", "Trash folder"], ["/mnt/user", "All shares"], [d.config_dir, "App data"]]) {
     const m = byPath[cp];
     const val = !m ? h("span", { class: "na" }, "not mapped")
       : m.host ? h("span", { class: "path" }, m.host)
@@ -694,6 +727,8 @@ async function loadSettings() {
   $("junk_patterns").value = s.junk_patterns.join("\n");
   $("exclude_dirs").value = s.exclude_dirs.join("\n");
   const ms = $("moveStatus"); ms.replaceChildren(); const ml = s.move_dir ? statusLine(d.move_info) : null; if (ml) ms.append(ml);
+  recycleData = d.recycle || [];
+  renderRecycle();
   syncMove();
   loadMounts().catch(() => {});
 
@@ -718,6 +753,23 @@ async function loadSettings() {
 function syncMove() {
   const need = $("archive_mode").value === "move" || $("junk_mode").value === "move";
   $("moveField").style.display = need ? "" : "none";
+  $("recycleInfo").style.display = ($("archive_mode").value === "recycle" || $("junk_mode").value === "recycle") ? "" : "none";
+}
+let recycleData = [];
+function renderRecycle() {
+  const box = $("recycleInfo"); box.replaceChildren();
+  box.append(h("label", {}, "Recycle Bin"));
+  if (!recycleData.length) { box.append(h("div", { class: "hint" }, "Add a source folder to see where its Recycle Bin is.")); return; }
+  for (const r of recycleData) {
+    if (!r.ok) {
+      box.append(h("div", { class: "missing", style: "margin:0 0 4px" }, r.source + ": " + r.why));
+      continue;
+    }
+    const where = r.host ? r.host : r.bin;
+    const items = r.exists ? " - " + r.items + " item" + (r.items === 1 ? "" : "s") + " in it now" : " - created when the first file is moved there";
+    box.append(h("div", { class: "okline", style: "margin:0 0 4px" }, "From " + r.source + " to ", h("span", { class: "path" }, where), items));
+  }
+  box.append(h("div", { class: "hint" }, "Each share's .Recycle.Bin folder - the one the Unraid Recycle Bin plugin uses for files deleted over SMB, so you can browse and empty it from the plugin. Files keep their folder layout inside it. .Recycle.Bin folders are never scanned."));
 }
 $("archive_mode").addEventListener("change", syncMove);
 $("junk_mode").addEventListener("change", syncMove);
@@ -841,6 +893,7 @@ function renderStats() {
     tile("Archive data processed", fmtSize(t.bytes_in), t.bytes_in ? "unpacked to " + (t.bytes_out / t.bytes_in).toFixed(2) + "x its size" : ""),
     tile("Space freed", fmtSize(t.freed), "archives and junk deleted"),
     tile("Moved to trash", fmtSize(t.moved), "archives and junk moved"),
+    tile("Moved to Recycle Bin", fmtSize(t.recycled || 0), "archives and junk recycled"),
     tile("Junk files cleaned", fmtNum(t.junk), t.junk_bytes ? fmtSize(t.junk_bytes) : ""),
     tile("Success rate", attempts ? (100 * t.archives / attempts).toFixed(attempts > t.archives ? 1 : 0) + "%" : "-", fmtNum(t.failed) + " failed"),
     tile("Scans run", fmtNum(t.runs), ""),

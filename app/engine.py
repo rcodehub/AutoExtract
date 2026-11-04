@@ -20,6 +20,7 @@ import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
+import mounts
 from stats import Stats
 
 ARCHIVE_SUFFIXES = (
@@ -123,6 +124,8 @@ class Engine:
         self.failed_paths = set()
         self.deferred = set()        # archives skipped because they are too recent
         self.nested = set()          # archives that came out of an archive in this run (never too recent)
+        self.kept = set()
+        self._mounts = []
         self._slots = []
 
     # ------------------------------------------------------------ logging
@@ -204,13 +207,14 @@ class Engine:
             return s
 
     # ------------------------------------------------------------ control
-    def start(self, cfg, trigger="manual", dry_run=False):
+    def start(self, cfg, trigger="manual", dry_run=False, oneoff=None):
+        """oneoff = {"path": folder, "recursive": bool}: extract just that folder now (one-off job)."""
         with self.lock:
             if self.running:
                 return False
             self.stop_event.clear()
             self.thread = threading.Thread(
-                target=self._run, args=(dict(cfg), trigger, dry_run), daemon=True)
+                target=self._run, args=(dict(cfg), trigger, dry_run, oneoff), daemon=True)
             self.status = self._blank_status()
             self.status.update(state="running", trigger=trigger, dry_run=dry_run,
                                started_at=time.time())
@@ -219,6 +223,7 @@ class Engine:
             self.failed_paths = set()
             self.deferred = set()
             self.nested = self._load_nested()
+            self.kept = set()            # one-off "keep": extracted, left in place, not extracted again in this run
             self._slots = [None] * cfg["threads"]
             self.thread.start()
             return True
@@ -238,20 +243,48 @@ class Engine:
         return True
 
     # ------------------------------------------------------------ the run
-    def _run(self, cfg, trigger, dry_run):
+    def _run(self, cfg, trigger, dry_run, oneoff=None):
         cfg["dry_run"] = dry_run
+        cfg["_skip_dirs"] = set()
         result, message = "completed", ""
         self.log("info", f"=== Run started ({trigger}{', dry run' if dry_run else ''}) ===")
         try:
+            self._mounts = mounts.list_mounts(os.path.dirname(self.history_path) or "/data")
             sources = []
-            for s in cfg["sources"]:
-                s = os.path.realpath(s)
-                if os.path.isdir(s):
-                    sources.append(s)
-                else:
-                    self.log("warn", f"Source folder not found, skipping: {s}")
+            if oneoff:
+                target = os.path.realpath(oneoff["path"])
+                if not os.path.isdir(target):
+                    raise RuntimeError(f"Folder not found: {target}")
+                sources = [target]
+                if not oneoff.get("recursive", True):
+                    # only this folder: skip the sub-folders that are already there (new ones that come out of
+                    # an archive are still processed, so nested archives get extracted)
+                    try:
+                        cfg["_skip_dirs"] = {e.path for e in os.scandir(target) if e.is_dir(follow_symlinks=False)}
+                    except OSError:
+                        pass
+                self.log("info", f"One-off: extracting {target}" +
+                         (" and its sub-folders" if oneoff.get("recursive", True) else " (this folder only)"))
+            else:
+                for s in cfg["sources"]:
+                    s = os.path.realpath(s)
+                    if os.path.isdir(s):
+                        sources.append(s)
+                    else:
+                        self.log("warn", f"Source folder not found, skipping: {s}")
             if not sources:
                 raise RuntimeError("No valid source folders configured")
+
+            if "recycle" in (cfg["archive_mode"], cfg["junk_mode"]):
+                for s in sources:
+                    _, why = mounts.recycle_target(os.path.join(s, "x"), self._mounts)
+                    if why:
+                        raise RuntimeError(f"Cannot use the Recycle Bin for {s}: {why}. Choose delete or move "
+                                           "instead, or map the share (or /mnt/user) into the container")
+                    rb = mounts.recycle_root(os.path.join(s, "x"), self._mounts)[0]
+                    host = mounts.path_info(rb, self._mounts)["host"]
+                    self.log("info", f"Processed files from {s} go to the Recycle Bin: {rb}"
+                                     + (f" (on the server: {host})" if host else ""))
 
             if cfg["move_dir"] and (cfg["archive_mode"] == "move" or cfg["junk_mode"] == "move"):
                 cfg["move_dir"] = os.path.realpath(cfg["move_dir"])
@@ -331,8 +364,8 @@ class Engine:
 
     # ------------------------------------------------------------ scanning
     def _excluded(self, name, cfg):
-        if name.startswith(STAGE_PREFIX):
-            return True
+        if name.startswith(STAGE_PREFIX) or name == mounts.RECYCLE_NAME:
+            return True                               # never scan work folders or the Recycle Bin
         low = name.lower()
         return any(fnmatch.fnmatch(low, p.lower()) for p in cfg["exclude_dirs"])
 
@@ -409,13 +442,12 @@ class Engine:
             todo = []
             for a in self._list_archives(d, cfg):
                 self._register(a)        # picks up nested archives that just appeared
-                if a not in self.failed_paths and a not in pending:
+                if a not in self.failed_paths and a not in pending and a not in self.kept:
                     todo.append(a)
             did = 0
             if dry:
                 for a in todo:
-                    act = f"move to {cfg['move_dir']}" if cfg["archive_mode"] == "move" else "delete"
-                    self.log("info", f"[dry run] would extract, then {act}: {a}")
+                    self.log("info", f"[dry run] would extract, then {self._act_text(cfg['archive_mode'], cfg)}: {a}")
             elif todo:
                 # zip/7z/tar first: they often contain the parts of a RAR set
                 batch = [a for a in todo if not a.lower().endswith(".rar")] or todo
@@ -450,6 +482,8 @@ class Engine:
             self.log("warn", f"Cannot read {d}: {e}")
             subs = []
         for s in subs:
+            if s in cfg.get("_skip_dirs", ()):
+                continue
             self._process_dir(s, root, cfg, pool)
 
     # ------------------------------------------------------------ worker
@@ -664,7 +698,15 @@ class Engine:
             return [path] + [os.path.join(d, n) for n in names if rx.match(n)]
         return [path]
 
+    def _act_text(self, mode, cfg):
+        return {"move": f"move to {cfg['move_dir']}", "recycle": "move to the Recycle Bin",
+                "keep": "keep"}.get(mode, "delete")
+
     def _dispose_archive(self, path, root, cfg):
+        if cfg["archive_mode"] == "keep":
+            with self.lock:
+                self.kept.update(self._archive_group(path))
+            return True
         ok = True
         for f in self._archive_group(path):
             ok = self._dispose(f, root, cfg, cfg["archive_mode"]) and ok
@@ -683,8 +725,7 @@ class Engine:
                 continue
             if any(fnmatch.fnmatch(e.name.lower(), p) for p in pats):
                 if cfg["dry_run"]:
-                    act = f"move to {cfg['move_dir']}" if cfg["junk_mode"] == "move" else "delete"
-                    self.log("info", f"[dry run] would {act} junk: {e.path}")
+                    self.log("info", f"[dry run] would {self._act_text(cfg['junk_mode'], cfg)} junk: {e.path}")
                 else:
                     try:
                         size = e.stat(follow_symlinks=False).st_size
@@ -697,14 +738,42 @@ class Engine:
 
     def _dispose(self, path, root, cfg, mode):
         try:
+            if mode == "keep":
+                return True
             if mode == "move":
                 self._move(path, root, cfg)
+            elif mode == "recycle":
+                self._recycle(path, cfg)
             else:
                 os.remove(path)
             return True
-        except OSError as e:
-            self.log("warn", f"Could not {'move' if mode == 'move' else 'delete'} {path}: {e}")
+        except (OSError, RuntimeError) as e:
+            self.log("warn", f"Could not {self._act_text(mode, cfg)} {path}: {e}")
             return False
+
+    def _recycle(self, src, cfg):
+        """Move into <share>/.Recycle.Bin/<path inside the share>, where the Unraid Recycle Bin plugin keeps
+        files deleted over SMB (so they are listed and emptied by the plugin)."""
+        parent, why = mounts.recycle_target(src, self._mounts)
+        if why:
+            raise RuntimeError(f"Recycle Bin not usable: {why}")
+        dest = os.path.join(parent, os.path.basename(src))
+        with self.move_lock:
+            missing, p = [], parent
+            while not os.path.isdir(p):
+                missing.append(p)
+                p = os.path.dirname(p)
+            for m in reversed(missing):
+                os.mkdir(m)
+                self._apply_perm(m, True, cfg)
+            if os.path.exists(dest):                 # never overwrite something already in the bin
+                n = 1
+                while os.path.exists(f"{dest}.{n}"):
+                    n += 1
+                dest = f"{dest}.{n}"
+            shutil.move(src, dest)
+        self._apply_perm(dest, False, cfg)
+        return dest
 
     def _move(self, src, root, cfg):
         """Move into move_dir/<source folder name>/<path relative to source>."""

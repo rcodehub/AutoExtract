@@ -4,7 +4,7 @@ A Docker container for Unraid (or any Docker host) that scans a folder on a sche
 
 - extracts `zip`, `rar`, `7z` and `tar` archives (incl. `.tar.gz/.tgz/.tar.bz2/.tar.xz`) into the folder they are in,
 - extracts archives found inside those archives, as many levels deep as needed,
-- deletes the processed archives and junk files such as `*.diz`, or moves them to a trash folder,
+- moves the processed archives and junk files such as `*.diz` to the share's Recycle Bin, deletes them, or moves them to a trash folder,
 - optionally sets permissions and ownership on everything it processed.
 
 Multi-part sets are handled and cleaned up together: `name.part1.rar`…, `name.rar` + `.r00`…, `name.zip` + `.z01`…, `name.7z.001`…. An archive is only deleted or moved after it extracted successfully; anything that fails is left in place and listed with the reason.
@@ -33,7 +33,8 @@ then **Docker → Add Container → Template: my-AutoExtract**.
 | Web UI port | `8080` (host default `8844`) | Web interface |
 | App data | `/data` | Settings, history, statistics, logs. e.g. `/mnt/user/appdata/autoextract` |
 | Folder to scan | `/downloads` | The share to scan, read/write. e.g. `/mnt/user/downloads` |
-| Trash folder (optional) | `/trash` | If set, processed archives and junk are **moved** here instead of deleted. Must be a separate folder, not inside the scan folder or a parent of it. Use the same kind of path as the scan folder (both `/mnt/user/…` or both `/mnt/diskN/…`) |
+| Trash folder (optional) | `/trash` | If set, processed archives and junk are **moved** here. Must be a separate folder, not inside the scan folder or a parent of it. Use the same kind of path as the scan folder (both `/mnt/user/…` or both `/mnt/diskN/…`) |
+| All shares (optional, advanced) | `/mnt/user` | Lets **Extract folder…** and the folder pickers reach any share, and finds the Recycle Bin when the scan folder is a folder inside a share. Gives the container access to all shares - leave empty unless needed |
 | Timezone | `TZ` | For times in the logs |
 | UI username | `UI_USERNAME` | Login name, default `admin` |
 | UI password | `UI_PASSWORD` | Turns on the login page. Leave blank for no login (then anyone who can reach the port can use the UI) |
@@ -42,7 +43,7 @@ Only change the *Host Path* side of the paths. On first start `/downloads` is se
 
 ## Web UI
 
-- **Status** – next/last scan, progress, what each thread is extracting, failed archives and a live log. Buttons: **Run now**, **Dry run** (shows what would happen without changing anything), **Stop**.
+- **Status** – next/last scan, progress, what each thread is extracting, failed archives and a live log. Buttons: **Run now**, **Dry run** (shows what would happen without changing anything), **Extract folder…** (a one-off job on any folder you pick, with or without sub-folders; you choose for that run whether the archives go to the Recycle Bin, are deleted, moved or kept), **Stop**.
 - **Settings** – all options below, with a folder picker and live checks that show each folder's real location on the server.
 - **History** – every scan with counts, data size and failures.
 - **Stats** – lifetime totals (data and files extracted, space freed, success rate, speed), a 30-day chart, archive types and records.
@@ -59,13 +60,17 @@ Only change the *Host Path* side of the paths. On first start `/downloads` is se
 | Skip archives newer than | 5 min | Leaves archives that changed recently for a later scan, so downloads still in progress aren't touched. Archives that came out of other archives are never skipped. 0 = off |
 | Max nested levels | 25 | Safety limit for archives inside archives |
 | Overwrite existing files | on | Off keeps existing files |
-| Archives that extracted fine | delete | Delete, or move to the move folder |
-| Junk files | delete | Delete, or move to the move folder |
+| Archives that extracted fine | Recycle Bin* | Move to the share's Recycle Bin, delete, or move to the move folder |
+| Junk files | Recycle Bin* | Same choices |
 | Move folder | `/trash` if mapped | Keeps the folder layout: `<move folder>/<source name>/<path>`; name clashes get `.1`, `.2` |
 | Junk file patterns | `*.diz` | One per line, case-insensitive wildcards (`*.nfo`, `Thumbs.db`, `*sample*`). Applies to every scanned folder, so keep them specific |
 | Folders to skip | `@eaDir`, `.Recycle.Bin`, `#recycle`, `.Trash*` | Folder names to ignore |
 | Set permissions | on, 666 / 777 | File and folder modes for processed files and folders |
 | Also set the owner | off, 99:100 | `nobody:users` on Unraid |
+
+\* On a fresh install: **move** if `/trash` is mapped, otherwise the **Recycle Bin** if the share's root can be reached, otherwise **delete**.
+
+**Recycle Bin:** files go to `<share>/.Recycle.Bin/<same folders>`, the folder the Unraid **Recycle Bin** plugin uses for files deleted over SMB, so you can browse and empty them there. The share's root must be reachable inside the container: map the share itself (`/mnt/user/downloads` → `/downloads`), or also map **All shares** if you map a folder inside a share. Settings shows where each source's Recycle Bin is. `.Recycle.Bin` folders are never scanned.
 
 ## How it works
 

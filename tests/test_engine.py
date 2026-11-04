@@ -326,11 +326,94 @@ def test_stats():
 
 
 
+def fake_mounts(work, entries):
+    """entries: [(container path, root inside the file system, fstype, device)] -> mountinfo file for mounts.py"""
+    import mounts
+    lines = ["20 1 0:20 / / rw - overlay overlay rw"]
+    for i, (mp, root, fs, dev) in enumerate(entries):
+        lines.append(f"{30 + i} 20 0:{30 + i} {root} {mp} rw,noatime - {fs} {dev} rw")
+    path = os.path.join(work, "mountinfo")
+    open(path, "w").write("\n".join(lines) + "\n")
+    mounts.MOUNTINFO = path
+
+
+def test_recycle_bin():
+    import mounts
+    old = mounts.MOUNTINFO
+    try:
+        # 1) the share itself is mapped (/mnt/user/downloads -> /downloads): bin at <share>/.Recycle.Bin
+        work, eng = fresh()
+        share = os.path.join(work, "downloads")
+        os.makedirs(f"{share}/Show/S01")
+        os.makedirs(f"{share}/.Recycle.Bin/old")
+        make_zip(f"{share}/.Recycle.Bin/old/deleted.zip", {"x.txt": "x"})      # must never be touched
+        make_zip(f"{share}/Show/S01/ep.zip", {"ep.mkv": "v"})
+        open(f"{share}/Show/S01/file.diz", "w").write("j")
+        fake_mounts(work, [(share, "/downloads", "fuse.shfs", "shfs")])
+        s = run(eng, base_cfg(sources=[share], archive_mode="recycle", junk_mode="recycle"))
+        t = tree(share)
+        check("recycle: archive and junk moved into the share's .Recycle.Bin with their folder layout",
+              "Show/S01/ep.mkv" in t and ".Recycle.Bin/Show/S01/ep.zip" in t and ".Recycle.Bin/Show/S01/file.diz" in t
+              and "Show/S01/ep.zip" not in t, (t, s["failures"], s["message"]))
+        check("recycle: existing Recycle Bin is never scanned", ".Recycle.Bin/old/deleted.zip" in t and "x.txt" not in " ".join(t), t)
+        check("recycle: counted in stats", eng.stats.snapshot()["totals"]["recycled"] > 0)
+        shutil.rmtree(work)
+
+        # 2) a folder inside a share is mapped and the share root is not reachable: clear error, nothing touched
+        work, eng = fresh()
+        sub = os.path.join(work, "dl")
+        os.makedirs(sub)
+        make_zip(f"{sub}/a.zip", {"a.txt": "a"})
+        fake_mounts(work, [(sub, "/data/downloads", "fuse.shfs", "shfs")])
+        s = run(eng, base_cfg(sources=[sub], archive_mode="recycle"))
+        check("recycle: unreachable share root stops the run with a reason",
+              s["result"] == "error" and "not reachable" in s["message"] and "a.zip" in tree(sub), s["message"])
+        shutil.rmtree(work)
+
+        # 3) same, but all shares (/mnt/user) are mapped too: bin at <all>/data/.Recycle.Bin/downloads/...
+        work, eng = fresh()
+        sub, allsh = os.path.join(work, "dl"), os.path.join(work, "all")
+        os.makedirs(sub)
+        os.makedirs(f"{allsh}/data")
+        make_zip(f"{sub}/a.zip", {"a.txt": "a"})
+        fake_mounts(work, [(sub, "/data/downloads", "fuse.shfs", "shfs"), (allsh, "/", "fuse.shfs", "shfs")])
+        s = run(eng, base_cfg(sources=[sub], archive_mode="recycle"))
+        check("recycle: share root found through the all-shares mapping",
+              os.path.isfile(f"{allsh}/data/.Recycle.Bin/downloads/a.zip") and "a.txt" in tree(sub), (tree(allsh), s["message"]))
+        shutil.rmtree(work)
+    finally:
+        mounts.MOUNTINFO = old
+
+
+def test_oneoff():
+    work, eng = fresh()
+    top = os.path.join(work, "pick")
+    os.makedirs(f"{top}/older")
+    make_zip(f"{top}/older/untouched.zip", {"u.txt": "u"})                 # existing sub-folder: skipped when not recursive
+    inner = os.path.join(work, "inner.zip")
+    make_zip(inner, {"deep.txt": "d"})
+    make_zip(f"{top}/rel.zip", {"Rel/inner.zip": ("file", inner), "r.txt": "r"})   # creates a new folder with a nested zip
+    fresh_time = time.time()
+    os.utime(f"{top}/rel.zip", (fresh_time, fresh_time))                 # brand new: one-off ignores the age rule
+    cfg = base_cfg(sources=[os.path.join(work, "elsewhere")], min_age_minutes=0)
+    cfg["archive_mode"] = "keep"
+    assert eng.start(cfg, "one-off", False, oneoff={"path": top, "recursive": False})
+    eng.thread.join(60)
+    s = eng.snapshot()
+    t = tree(top)
+    check("one-off keep: extracted, archives left in place, no endless loop",
+          s["result"] == "completed" and "r.txt" in t and "rel.zip" in t and "Rel/deep.txt" in t and "Rel/inner.zip" in t, (t, s))
+    check("one-off this folder only: existing sub-folders skipped", "older/untouched.zip" in t and "older/u.txt" not in t, t)
+    shutil.rmtree(work)
+
+
+
 if __name__ == "__main__":
     print("tools:", {k: bool(v) for k, v in Engine(tempfile.mkdtemp(), os.devnull).tools.items()})
     for fn in (test_settings, test_nested_delete_and_perms, test_move_mode, test_dry_run,
                test_min_age, test_excluded_and_stop, test_parallel_same_names, test_parts_spread_over_zips,
-               test_broken_archive, test_volumes, test_nested_remembered_between_runs, test_stats):
+               test_broken_archive, test_volumes, test_nested_remembered_between_runs, test_stats,
+               test_recycle_bin, test_oneoff):
         fn()
     print("\nALL PASSED" if not FAILS else f"\nFAILED: {FAILS}")
     sys.exit(1 if FAILS else 0)

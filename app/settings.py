@@ -19,8 +19,8 @@ DEFAULTS = {
     "min_age_minutes": 5,             # ignore archives modified more recently than this (still downloading)
     "max_passes": 25,                 # nesting-depth safety cap per directory
     "overwrite": True,                # overwrite existing files when extracting
-    "archive_mode": "delete",         # what to do with an archive after a successful extract: delete | move
-    "junk_mode": "delete",            # what to do with junk files: delete | move
+    "archive_mode": "delete",         # after a successful extract: recycle (share's .Recycle.Bin) | delete | move
+    "junk_mode": "delete",            # junk files: recycle | delete | move
     "move_dir": "",                   # where "move" puts things
     "junk_patterns": ["*.diz"],       # file name patterns (case-insensitive)
     "exclude_dirs": ["@eaDir", ".Recycle.Bin", "#recycle", ".Trash*"],
@@ -35,14 +35,22 @@ DEFAULTS = {
 _lock = threading.Lock()
 
 
+MODES = ("recycle", "delete", "move")
+
+
 def env_defaults():
-    """First-start settings, from the folders mapped in the template: /downloads is scanned, and if
-    /trash is mapped, processed archives and junk are moved there instead of deleted."""
+    """First-start settings, from the folders mapped in the template: /downloads is scanned; processed archives
+    and junk go to /trash if it is mapped, otherwise to the share's Recycle Bin (.Recycle.Bin, as used by the
+    Unraid Recycle Bin plugin) when the share root can be reached, otherwise they are deleted."""
     d = dict(DEFAULTS)
     d["sources"] = mounts.suggested_sources(CONFIG_DIR)
     move = mounts.suggested_move_dir(CONFIG_DIR)
     if move:
         d.update(move_dir=move, archive_mode="move", junk_mode="move")
+    elif d["sources"]:
+        mnt = mounts.list_mounts(CONFIG_DIR)
+        if not any(mounts.recycle_target(os.path.join(p, "x"), mnt)[1] for p in d["sources"]):
+            d.update(archive_mode="recycle", junk_mode="recycle")
     return d
 
 
@@ -101,8 +109,8 @@ def validate(data):
 
     for k, label in (("archive_mode", "Archive action"), ("junk_mode", "Junk action")):
         v = str(data.get(k, s[k])).lower()
-        if v not in ("delete", "move"):
-            errors.append(f"{label} must be delete or move")
+        if v not in MODES:
+            errors.append(f"{label} must be recycle, delete or move")
         else:
             s[k] = v
 

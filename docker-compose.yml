@@ -13,3 +13,4 @@ services:
       - /mnt/user/appdata/autoextract:/data        # settings, history, stats, logs
       - /mnt/user/downloads:/downloads             # folder to scan
       - /mnt/user/trash:/trash                     # optional: processed archives/junk are moved here
+      # - /mnt/user:/mnt/user                      # optional: all shares (Extract folder on any share)
