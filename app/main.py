@@ -344,6 +344,9 @@ def api_run_folder():
         return jsonify(ok=False, error="Choose an existing folder (a path inside the container)."), 400
     if settings._within(path, settings.CONFIG_DIR):
         return jsonify(ok=False, error="That is the app data folder - choose a folder such as /downloads."), 400
+    if not inside_roots(path, browse_roots()):
+        return jsonify(ok=False, error="Choose a folder inside one of the folders mapped into the container "
+                                       "(such as /downloads or /mnt/user)."), 400
     if engine.running:
         return jsonify(ok=False, error="A scan is already running. Wait for it to finish or stop it first."), 409
     cfg = settings.load()
@@ -376,20 +379,36 @@ def api_history():
     return jsonify(history=list(reversed(engine.history[-100:])))
 
 
+def browse_roots():
+    """Folders the user mapped into the container (not the app data folder): the only places the
+    folder pickers show. Container folders such as /var or /etc are never offered."""
+    return [m["path"] for m in mounts.list_mounts(CONFIG_DIR) if not m["config"]]
+
+
+def inside_roots(path, roots):
+    real = os.path.realpath(path)                 # a link pointing outside the mapped folders doesn't count
+    return any(settings._within(real, os.path.realpath(r)) for r in roots)
+
+
 @app.route("/api/browse")
 def api_browse():
-    """List sub-folders so the settings page can offer a folder picker."""
+    """List sub-folders for the folder picker - only inside mapped folders. The top level ("") lists the
+    mapped folders themselves."""
+    roots = browse_roots()
     path = os.path.normpath(request.args.get("path") or "/")
-    if not os.path.isabs(path):
-        path = "/"
+    if not os.path.isabs(path) or not os.path.isdir(path) or not inside_roots(path, roots):
+        return jsonify(path="", parent=None, top=True, dirs=sorted(roots),
+                       error=None if roots else "No folders are mapped into the container yet.")
     try:
         # hidden folders (.name) are listed too; only AutoExtract's own work folders are left out
         dirs = sorted((e.name for e in os.scandir(path)
-                       if e.is_dir() and not e.name.startswith(".autoextract-")),
+                       if e.is_dir() and not e.name.startswith(".autoextract-")
+                       and inside_roots(e.path, roots)),
                       key=lambda n: (n.lstrip(".").lower(), n))[:2000]
     except OSError as e:
-        return jsonify(path=path, parent=os.path.dirname(path), dirs=[], error=str(e))
-    return jsonify(path=path, parent=os.path.dirname(path) if path != "/" else None, dirs=dirs)
+        return jsonify(path=path, parent="", dirs=[], error=str(e))
+    at_root = any(os.path.realpath(path) == os.path.realpath(r) for r in roots)
+    return jsonify(path=path, parent="" if at_root else os.path.dirname(path), dirs=dirs)
 
 
 _cfg, _problems, _src = settings.load_with_report()

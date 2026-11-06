@@ -833,11 +833,14 @@ $("btnSave").addEventListener("click", async () => {
 // ---------------------------------------------------------------- folder picker
 let pickCb = null, pickPath = "/";
 async function browse(path) {
-  const d = await api("/api/browse?path=" + encodeURIComponent(path));
-  pickPath = d.path; $("dlgPath").textContent = d.path;
+  const d = await api("/api/browse?path=" + encodeURIComponent(path || "/"));
+  pickPath = d.path;
+  $("dlgPath").textContent = d.top ? "Choose a mapped folder" : d.path;
+  $("dlgOk").disabled = !!d.top;
   const list = $("dlgList"); list.replaceChildren();
-  if (d.parent) list.append(h("div", { onclick: () => browse(d.parent) }, ".. (up)"));
-  for (const n of d.dirs) list.append(h("div", { onclick: () => browse((d.path === "/" ? "" : d.path) + "/" + n) }, n + "/"));
+  if (d.parent != null) list.append(h("div", { onclick: () => browse(d.parent) }, d.parent === "" ? ".. (mapped folders)" : ".. (up)"));
+  if (d.top) for (const p of d.dirs) list.append(h("div", { onclick: () => browse(p) }, p + "/"));
+  else for (const n of d.dirs) list.append(h("div", { onclick: () => browse(d.path + "/" + n) }, n + "/"));
   if (d.error) list.append(h("div", { class: "missing" }, d.error));
 }
 function pickFolder(start, cb) {
@@ -848,7 +851,7 @@ function pickFolder(start, cb) {
     sc.append(h("span", {}, "Mapped folders:"));
     for (const m of data) sc.append(h("button", { class: "small", onclick: () => browse(m.path) }, m.path));
   }
-  browse(start).catch(() => browse("/")); $("dlg").showModal();
+  browse(start).catch(() => browse("")); $("dlg").showModal();
 }
 $("dlgCancel").addEventListener("click", () => $("dlg").close());
 $("dlgOk").addEventListener("click", () => { if (pickCb) pickCb(pickPath); $("dlg").close(); });

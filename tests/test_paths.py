@@ -213,7 +213,7 @@ r = c.post("/api/run-folder", json={"path": cfg})
 check("one-off: app data folder refused", r.status_code == 400)
 r = c.post("/api/run-folder", json={"path": dl, "action": "bogus"})
 check("one-off: unknown action refused", r.status_code == 400)
-pick = os.path.join(root, "pick")
+pick = os.path.join(dl, "pick")
 os.makedirs(pick)
 import zipfile
 with zipfile.ZipFile(os.path.join(pick, "x.zip"), "w") as z:
@@ -222,6 +222,23 @@ r = c.post("/api/run-folder", json={"path": pick, "action": "keep", "recursive":
 main.engine.thread.join(20)
 check("one-off: runs and keeps the archive", r.status_code == 200 and os.path.isfile(os.path.join(pick, "x.txt"))
       and os.path.isfile(os.path.join(pick, "x.zip")) and main.engine.history[-1]["trigger"] == "one-off", r.get_json())
+
+# --- folder picker: only mapped folders, never container folders
+d = c.get("/api/browse?path=/").get_json()
+check("browse: top level lists the mapped folders only (no app data)", d.get("top") and set(d["dirs"]) == {dl, media, proc}, d)
+d = c.get("/api/browse?path=/etc").get_json()
+check("browse: container folders are not browsable", d.get("top") and "/etc" not in d["dirs"] and "passwd" not in str(d), d)
+d = c.get("/api/browse?path=" + cfg).get_json()
+check("browse: app data folder is not browsable", d.get("top"), d)
+d = c.get("/api/browse?path=" + dl).get_json()
+check("browse: up from a mapped folder goes back to the list", d["parent"] == "" and not d.get("top"), d)
+os.symlink("/etc", os.path.join(dl, "escape"))
+d = c.get("/api/browse?path=" + dl).get_json()
+check("browse: links leading outside are hidden", "escape" not in d["dirs"], d)
+d = c.get("/api/browse?path=" + os.path.join(dl, "escape")).get_json()
+check("browse: and can't be opened", d.get("top"), d)
+r = c.post("/api/run-folder", json={"path": "/etc"})
+check("one-off: folder outside the mapped folders refused", r.status_code == 400 and "mapped" in r.get_json()["error"], r.get_json())
 
 print("\nALL PASSED" if not FAILS else f"\nFAILED: {FAILS}")
 sys.exit(1 if FAILS else 0)

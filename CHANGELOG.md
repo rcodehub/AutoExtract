@@ -2,6 +2,9 @@
 
 Newest first. The latest entries are copied into the Unraid template (shown in Community Applications) each time an image is published.
 
+### 2026-11-06
+- Folder pickers and **Extract folder…** only show folders mapped into the container (`/downloads`, `/trash`, `/mnt/user`, ...); container folders such as `/var` are hidden, and the app data folder too.
+
 ### 2026-11-04
 - The Status page lists the folders whose archives are waiting because they changed too recently (may still be downloading), with the archive names and when they will be old enough to extract.
 - Stats: one "Moved to Recycle Bin / trash" tile with the split underneath, instead of two separate tiles.
