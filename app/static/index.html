@@ -239,14 +239,15 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
         <div><b id="cFail">0</b><span>failed</span></div>
         <div><b id="cJunk">0</b><span>junk handled</span></div>
         <div><b id="cDef">0</b><span>too recent (skipped)</span></div>
+        <div id="cCanBox" hidden><b id="cCan">0</b><span>cancelled</span></div>
         <div><b id="cData">0 B</b><span>data extracted</span></div>
       </div>
     </section>
 
     <section class="card">
       <h2>Threads</h2>
-      <table><thead><tr><th>Thread</th><th>Working on</th><th style="text-align:right">Time</th></tr></thead>
-        <tbody id="threads"><tr><td colspan="3" class="idle">Not running</td></tr></tbody></table>
+      <table><thead><tr><th>Thread</th><th>Working on</th><th style="text-align:right">Time</th><th></th></tr></thead>
+        <tbody id="threads"><tr><td colspan="4" class="idle">Not running</td></tr></tbody></table>
     </section>
 
     <section class="card" id="waitCard" hidden>
@@ -579,12 +580,34 @@ function renderStatus(d) {
   $("barfill").style.width = (e.found ? Math.min(100, e.done / e.found * 100) : 0) + "%";
 
   // threads
-  const tb = $("threads"); tb.replaceChildren();
-  if (!e.slots.length) tb.append(h("tr", {}, h("td", { colspan: 3, class: "idle" }, "Not running")));
-  for (const sl of e.slots) tb.append(h("tr", {},
-    h("td", { class: "n" }, "#" + sl.n),
-    h("td", { class: sl.path ? "path" : "idle" }, sl.path || "idle"),
-    h("td", { class: "t" }, sl.path ? dur(sl.elapsed) : "")));
+  $("cCanBox").hidden = !e.cancelled; $("cCan").textContent = e.cancelled || 0;
+  const tb = $("threads");
+  if (!e.slots.length) {
+    if (!tb.querySelector("td.none")) tb.replaceChildren(h("tr", {}, h("td", { colspan: 4, class: "idle none" }, "Not running")));
+  } else {
+    tb.querySelector("td.none")?.closest("tr")?.remove();
+    for (const sl of e.slots) {
+      let tr = tb.querySelector('tr[data-slot="' + sl.n + '"]');
+      if (!tr || tr.dataset.path !== (sl.path || "")) {          // a new archive in this thread: build the row
+        tr = h("tr", { "data-slot": sl.n, "data-path": sl.path || "" },
+          h("td", { class: "n" }, "#" + sl.n),
+          h("td", { class: sl.path ? "path" : "idle" }, sl.path || "idle"),
+          h("td", { class: "t" }), h("td", { class: "act", style: "text-align:right;width:1%" }));
+        const old = tb.querySelector('tr[data-slot="' + sl.n + '"]');
+        if (old) old.replaceWith(tr); else tb.append(tr);
+      }
+      // update in place so a click on Cancel is never lost to a refresh
+      tr.querySelector(".t").textContent = sl.path ? (sl.phase === "finishing" ? "finishing " : "") + dur(sl.elapsed) : "";
+      const act = tr.querySelector(".act");
+      const canCancel = !!sl.path && sl.phase !== "finishing" && !sl.cancel && e.state !== "stopping";
+      if (canCancel && !act.firstChild) act.append(h("button", {
+        class: "small", title: "Cancel this archive only - nothing is changed and the other archives carry on",
+        onclick: async (ev) => { ev.target.disabled = true; try { await post("/api/cancel", { path: sl.path }); } catch (err) { banner("bad", err.message); } pollStatus(); },
+      }, "Cancel"));
+      if (!canCancel && act.firstChild) act.replaceChildren(sl.cancel ? h("span", { class: "muted small" }, "cancelling...") : "");
+    }
+    tb.querySelectorAll("tr[data-slot]").forEach((r) => { if (Number(r.dataset.slot) > e.slots.length) r.remove(); });
+  }
 
   // failures
   $("failCard").hidden = !e.failures.length;
@@ -866,7 +889,7 @@ async function loadHistory() {
     const row = h("tr", {},
       h("td", {}, fmtTime(r.started_at)), h("td", {}, (r.dry_run ? "dry run, " : "") + r.trigger),
       h("td", {}, res + (r.message ? " - " + r.message : "")),
-      h("td", {}, r.found), h("td", {}, r.extracted), h("td", {}, r.failed), h("td", {}, r.junk),
+      h("td", {}, r.found), h("td", {}, r.extracted), h("td", {}, r.failed + (r.cancelled ? " (+" + r.cancelled + " cancelled)" : "")), h("td", {}, r.junk),
       h("td", {}, r.bytes_out != null ? fmtSize(r.bytes_out) : "-"),
       h("td", {}, dur(r.finished_at - r.started_at)));
     tb.append(row);

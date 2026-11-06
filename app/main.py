@@ -369,6 +369,15 @@ def api_run_folder():
     return jsonify(ok=True)
 
 
+@app.route("/api/cancel", methods=["POST"])
+def api_cancel():
+    """Cancel the extraction of one archive; the rest of the run carries on."""
+    ok, why = engine.cancel_job(str((request.get_json(silent=True) or {}).get("path") or ""))
+    if not ok:
+        return jsonify(ok=False, error=why), 409
+    return jsonify(ok=True)
+
+
 @app.route("/api/stop", methods=["POST"])
 def api_stop():
     return jsonify(ok=engine.stop())

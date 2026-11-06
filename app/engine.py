@@ -90,6 +90,7 @@ class Engine:
         self.lock = threading.RLock()
         self.move_lock = threading.Lock()
         self.merge_lock = threading.Lock()
+        self.cancel_file_lock = threading.Lock()
         self.stop_event = threading.Event()
         self.procs = set()
         self.thread = None
@@ -97,6 +98,8 @@ class Engine:
         # archives that came out of an archive, remembered between scans: they are complete files,
         # so the "skip recent files" rule (meant for downloads in progress) never applies to them
         self.nested_path = os.path.join(os.path.dirname(history_path) or ".", "extracted-archives.json")
+        # archives the user cancelled: scheduled scans leave them alone until they change (Run now retries)
+        self.cancelled_path = os.path.join(os.path.dirname(history_path) or ".", "cancelled-archives.json")
         self.tools = which_tools()
 
         self.log_buf = deque(maxlen=2000)
@@ -127,6 +130,10 @@ class Engine:
         self.nested = set()          # archives that came out of an archive in this run (never too recent)
         self.kept = set()
         self._mounts = []
+        self.cancelled = 0
+        self.cancelled_paths = set()
+        self._slot_procs = {}        # slot -> running extractor processes (so one archive can be cancelled alone)
+        self._skip_logged = set()
         self._slots = []
 
     # ------------------------------------------------------------ logging
@@ -193,14 +200,16 @@ class Engine:
             s = dict(self.status)
             now = time.time()
             s["slots"] = [
-                ({"n": i + 1, "path": sl["path"], "elapsed": int(now - sl["t"])} if sl
+                ({"n": i + 1, "path": sl["path"], "elapsed": int(now - sl["t"]), "phase": sl.get("phase", "extracting"),
+                  "cancel": sl.get("cancel", False)} if sl
                  else {"n": i + 1, "path": None, "elapsed": 0})
                 for i, sl in enumerate(self._slots)
             ] if self.status["state"] != "idle" else []
             failed = self.failures
             s["found"] = len(self.seen)
             s["failed"] = len(failed)
-            s["done"] = s["extracted"] + s["failed"]
+            s["cancelled"] = self.cancelled
+            s["done"] = s["extracted"] + s["failed"] + self.cancelled
             s["remaining"] = max(0, s["found"] - s["done"])
             s["deferred"] = len(self.deferred)
             s["waiting"] = self._waiting()
@@ -242,6 +251,10 @@ class Engine:
             self.deferred_ready = {}
             self.nested = self._load_nested()
             self.kept = set()            # one-off "keep": extracted, left in place, not extracted again in this run
+            self.cancelled = 0
+            self.cancelled_paths = set()
+            self._slot_procs = {}
+            self._skip_logged = set()
             self._slots = [None] * cfg["threads"]
             self.thread.start()
             return True
@@ -264,6 +277,7 @@ class Engine:
     def _run(self, cfg, trigger, dry_run, oneoff=None):
         cfg["dry_run"] = dry_run
         cfg["_skip_dirs"] = set()
+        cfg["_trigger"] = trigger
         result, message = "completed", ""
         self.log("info", f"=== Run started ({trigger}{', dry run' if dry_run else ''}) ===")
         try:
@@ -371,6 +385,7 @@ class Engine:
                 "failed": len(self.failures), "junk": st["junk"],
                 "deferred": len(self.deferred),
                 "files_out": st["files_out"], "bytes_out": st["bytes_out"], "bytes_in": st["bytes_in"],
+                "cancelled": self.cancelled,
                 "failures": self.failures[-50:],
             }
             self.history.append(entry)
@@ -460,10 +475,18 @@ class Engine:
             with self.lock:
                 self.status["pass"] = p
             todo = []
+            cancelled_before = self._load_cancelled() if cfg.get("_trigger") == "schedule" else {}
             for a in self._list_archives(d, cfg):
                 self._register(a)        # picks up nested archives that just appeared
-                if a not in self.failed_paths and a not in pending and a not in self.kept:
-                    todo.append(a)
+                if a in self.failed_paths or a in pending or a in self.kept or a in self.cancelled_paths:
+                    continue
+                if a in cancelled_before and cancelled_before[a] == self._signature(a):
+                    if a not in self._skip_logged:
+                        self._skip_logged.add(a)
+                        self.log("info", f"Skipped {a}: it was cancelled earlier and has not changed "
+                                         "(Run now or Extract folder... tries it again)")
+                    continue
+                todo.append(a)
             did = 0
             if dry:
                 for a in todo:
@@ -511,13 +534,70 @@ class Engine:
         with self.lock:
             for i, sl in enumerate(self._slots):
                 if sl is None:
-                    self._slots[i] = {"path": path, "t": time.time()}
+                    self._slots[i] = {"path": path, "t": time.time(), "phase": "extracting", "cancel": False}
                     return i
         return 0
 
     def _release_slot(self, i):
         with self.lock:
             self._slots[i] = None
+            self._slot_procs.pop(i, None)
+
+    def _halted(self, slot):
+        """True when the whole run was stopped or this one archive was cancelled."""
+        if self.stop_event.is_set():
+            return True
+        sl = self._slots[slot] if slot is not None and slot < len(self._slots) else None
+        return bool(sl and sl.get("cancel"))
+
+    def cancel_job(self, path):
+        """Cancel the extraction of one archive while the others carry on. Nothing is changed: the partly
+        extracted files are thrown away and the archive stays where it is. Possible until its files start
+        being moved into place."""
+        with self.lock:
+            for i, sl in enumerate(self._slots):
+                if sl and sl["path"] == path:
+                    if sl.get("phase") == "finishing":
+                        return False, "It is already finishing - too late to cancel"
+                    sl["cancel"] = True
+                    for p in list(self._slot_procs.get(i, ())):
+                        try:
+                            os.killpg(p.pid, signal.SIGTERM)
+                        except OSError:
+                            pass
+                    break
+            else:
+                return False, "That archive is not being extracted any more"
+        self.log("warn", f"Cancel requested: {path}")
+        return True, ""
+
+    def _signature(self, path):
+        """Size and newest change of the whole volume set: a cancelled archive is tried again once it changes."""
+        size, newest = 0, 0
+        for f in self._archive_group(path):
+            try:
+                st = os.stat(f)
+                size, newest = size + st.st_size, max(newest, st.st_mtime)
+            except OSError:
+                pass
+        return [size, int(newest)]
+
+    def _load_cancelled(self):
+        try:
+            with open(self.cancelled_path) as f:
+                d = json.load(f)
+            return d if isinstance(d, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _save_cancelled(self, d):
+        try:
+            tmp = self.cancelled_path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(dict(list(d.items())[-5000:]), f)
+            os.replace(tmp, self.cancelled_path)
+        except OSError as e:
+            self.log("warn", f"Could not save {self.cancelled_path}: {e}")
 
     def _work(self, path, root, cfg, final):
         """Returns "ok", "retry" (failed - try again alone later) or "fail"."""
@@ -527,9 +607,24 @@ class Engine:
         try:
             self.log("info", f"[thread {slot + 1}] Extracting {path}")
             t0 = time.time()
-            ok, err, out = self._extract(path, os.path.dirname(path), cfg)
+            ok, err, out = self._extract(path, os.path.dirname(path), cfg, slot)
             secs = time.time() - t0
+            if not ok and not self.stop_event.is_set() and self._halted(slot):   # cancelled by the user
+                with self.lock:
+                    self.cancelled += 1
+                    self.cancelled_paths.add(path)
+                with self.cancel_file_lock:
+                    c = self._load_cancelled()
+                    c[path] = self._signature(path)
+                    self._save_cancelled(c)
+                self.log("warn", f"Cancelled: {path} - nothing was changed. Scheduled scans skip it until it changes; "
+                                 "Run now (or Extract folder...) tries it again")
+                return "cancelled"
             if ok:
+                with self.cancel_file_lock:
+                    c = self._load_cancelled()
+                    if c.pop(path, None) is not None:
+                        self._save_cancelled(c)
                 bytes_in = 0
                 for f in self._archive_group(path):
                     try:
@@ -598,7 +693,7 @@ class Engine:
         except OSError:
             return []
 
-    def _exec(self, cmd):
+    def _exec(self, cmd, slot=None):
         try:
             # own process group so "Stop" can kill the extractor and anything it spawned
             p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -608,14 +703,24 @@ class Engine:
             return None, str(e)
         with self.lock:
             self.procs.add(p)
+            if slot is not None:
+                self._slot_procs.setdefault(slot, set()).add(p)
+            cancel_now = self._halted(slot)
+        if cancel_now:                                     # cancelled between the check and the start
+            try:
+                os.killpg(p.pid, signal.SIGTERM)
+            except OSError:
+                pass
         try:
             out, _ = p.communicate()
         finally:
             with self.lock:
                 self.procs.discard(p)
+                if slot is not None:
+                    self._slot_procs.get(slot, set()).discard(p)
         return p.returncode, out or ""
 
-    def _extract(self, path, dest, cfg):
+    def _extract(self, path, dest, cfg, slot=None):
         """Extract into a private folder next to the archive, then move the result into place, so
         parallel extractions never write the same file at the same time. If the first extractor
         fails, the next one (7-Zip) is tried."""
@@ -624,7 +729,7 @@ class Engine:
             return False, "No extractor installed for this file type", None
         errors = []
         for tool in tools:
-            if self.stop_event.is_set():
+            if self._halted(slot):
                 return False, "stopped", None
             try:
                 stage = tempfile.mkdtemp(prefix=STAGE_PREFIX, dir=dest)
@@ -632,8 +737,15 @@ class Engine:
                 return False, f"cannot create a work folder in {dest}: {e}", None
             try:
                 cmd = dict(self._commands(path, stage, cfg))[tool]
-                code, out = self._exec(cmd)
+                code, out = self._exec(cmd, slot)
+                if self._halted(slot):                     # stopped or cancelled: throw the partial output away
+                    return False, "stopped", None
                 if code == 0:
+                    with self.lock:                        # from here on the files are being moved into place
+                        if slot is not None and slot < len(self._slots) and self._slots[slot]:
+                            if self._slots[slot].get("cancel"):
+                                return False, "stopped", None
+                            self._slots[slot]["phase"] = "finishing"
                     out = self._merge(stage, dest, cfg)
                     if errors:
                         self.log("info", f"Extracted with {tool} after: {' | '.join(errors)}")

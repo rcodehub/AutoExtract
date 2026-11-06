@@ -31,8 +31,8 @@ def base_cfg(**kw):
     return clean
 
 
-def run(engine, cfg, dry=False):
-    assert engine.start(cfg, "test", dry)
+def run(engine, cfg, dry=False, trigger="test"):
+    assert engine.start(cfg, trigger, dry)
     engine.thread.join(60)
     assert not engine.running
     return engine.snapshot()
@@ -412,12 +412,48 @@ def test_oneoff():
 
 
 
+def test_cancel_one():
+    """Cancel one archive while another carries on: nothing changed, remembered for scheduled scans."""
+    work, eng = fresh()
+    src = os.path.join(work, "src")
+    os.makedirs(src)
+    make_zip(f"{src}/slow.zip", {"big.bin": "s"})
+    make_zip(f"{src}/fast.zip", {"f.txt": "f"})
+    real = eng.tools["unzip"]
+    fake = os.path.join(work, "unzip-slow")
+    open(fake, "w").write("#!/bin/sh\ncase \"$*\" in *slow.zip*) echo partial > \"$5/partial.txt\"; sleep 30;; esac\nexec %s \"$@\"\n" % real)
+    os.chmod(fake, 0o755)
+    eng.tools = dict(eng.tools, unzip=fake, **{"7z": None})
+    assert eng.start(base_cfg(sources=[src], threads=2), "manual")
+    for _ in range(100):
+        sl = [x for x in eng.snapshot()["slots"] if x["path"] and x["path"].endswith("slow.zip")]
+        if sl and "fast.zip" not in tree(src):
+            break
+        time.sleep(0.1)
+    t0 = time.time()
+    ok, why = eng.cancel_job(f"{src}/slow.zip")
+    eng.thread.join(30)
+    s, t = eng.snapshot(), tree(src)
+    check("cancel: accepted and quick", ok and time.time() - t0 < 10, (ok, why))
+    check("cancel: archive untouched, partial output thrown away, other archive done",
+          "slow.zip" in t and "partial.txt" not in " ".join(t) and "f.txt" in t and not stage_dirs(src), t)
+    check("cancel: counted as cancelled, not failed", s["cancelled"] == 1 and s["failed"] == 0 and s["extracted"] == 1, s)
+    check("cancel: too late / unknown archive refused", eng.cancel_job(f"{src}/nope.zip")[0] is False)
+    eng.tools = dict(eng.tools, unzip=real)
+    s = run(eng, base_cfg(sources=[src]), trigger="schedule")
+    check("cancel: scheduled scans skip it while unchanged", "slow.zip" in tree(src) and s["extracted"] == 0, s)
+    s = run(eng, base_cfg(sources=[src]), trigger="manual")
+    check("cancel: Run now tries it again", "slow.zip" not in tree(src) and "big.bin" in tree(src), tree(src))
+    shutil.rmtree(work)
+
+
+
 if __name__ == "__main__":
     print("tools:", {k: bool(v) for k, v in Engine(tempfile.mkdtemp(), os.devnull).tools.items()})
     for fn in (test_settings, test_nested_delete_and_perms, test_move_mode, test_dry_run,
                test_min_age, test_excluded_and_stop, test_parallel_same_names, test_parts_spread_over_zips,
                test_broken_archive, test_volumes, test_nested_remembered_between_runs, test_stats,
-               test_recycle_bin, test_oneoff):
+               test_recycle_bin, test_oneoff, test_cancel_one):
         fn()
     print("\nALL PASSED" if not FAILS else f"\nFAILED: {FAILS}")
     sys.exit(1 if FAILS else 0)
