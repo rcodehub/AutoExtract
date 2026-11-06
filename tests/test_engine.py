@@ -424,12 +424,41 @@ def test_keep_mode():
     check("keep: file extracted and archive left in place", "k/kf.txt" in t and "k/kept.zip" in t, t)
     extracts = [e["msg"] for e in eng.log_since(0, 1000) if "Extracting" in e["msg"] and "kept.zip" in e["msg"]]
     check("keep: archive extracted once within the run", len(extracts) == 1, extracts)
-    s2 = run(eng, cfg)
-    extracts2 = [e["msg"] for e in eng.log_since(0, 1000) if "Extracting" in e["msg"] and "kept.zip" in e["msg"]]
-    check("keep: archive still present after a second separate run", "k/kept.zip" in tree(src), tree(src))
-    check("keep: files still exist after a second separate run", "k/kf.txt" in tree(src), tree(src))
-    print(f"INFO keep: extractions of kept.zip across two separate runs: {len(extracts2)} "
-          f"(second run result: {s2.get('result')})")
+    kf = os.path.join(work, "cfg", "kept-archives.json")
+    check("keep: archive recorded in the kept file", f"{src}/k/kept.zip" in json.load(open(kf)), os.path.exists(kf))
+    n = len(eng.log_since(0, 2000))
+    s2 = run(eng, cfg, trigger="schedule")
+    new_msgs = [e["msg"] for e in eng.log_since(0, 2000)[n:]]
+    check("keep: second run does not extract again", not any("Extracting" in m for m in new_msgs), new_msgs)
+    check("keep: second run is quiet and counts nothing",
+          not any("kept.zip" in m for m in new_msgs) and s2["skipped"] == 0 and s2["found"] == 0
+          and s2["remaining"] == 0 and s2["extracted"] == 0, (s2, new_msgs))
+    s2 = run(eng, cfg, trigger="manual")
+    check("keep: Run now does not extract it again either", s2["extracted"] == 0 and s2["found"] == 0, s2)
+    check("keep: archive and files still present", "k/kept.zip" in tree(src) and "k/kf.txt" in tree(src), tree(src))
+    os.remove(f"{src}/k/kf.txt")
+    make_zip(f"{src}/k/kept.zip", {"kf.txt": "changed", "more.txt": "m"})   # archive changed
+    s2 = run(eng, cfg, trigger="schedule")
+    check("keep: a changed archive is extracted again", s2["extracted"] == 1 and "k/more.txt" in tree(src), (s2, tree(src)))
+    s2 = run(eng, cfg, trigger="schedule")
+    check("keep: and then left alone again", s2["extracted"] == 0 and s2["found"] == 0, s2)
+    # one-off job processes a kept archive anyway
+    os.remove(f"{src}/k/more.txt")
+    assert eng.start(cfg, "one-off", False, oneoff={"path": src, "recursive": True})
+    eng.thread.join(60)
+    s2 = eng.snapshot()
+    check("keep: one-off re-extracts a kept archive", s2["extracted"] == 1 and "k/more.txt" in tree(src), (s2, tree(src)))
+    check("keep: still recorded after the one-off", f"{src}/k/kept.zip" in json.load(open(kf)))
+    # switching to delete processes it and removes it from the kept file
+    cfg_del = base_cfg(sources=[src], archive_mode="delete", junk_mode="delete")
+    s2 = run(eng, cfg_del, trigger="schedule")
+    check("keep -> delete: archive processed and removed",
+          s2["extracted"] == 1 and "k/kept.zip" not in tree(src) and json.load(open(kf)) == {}, (s2, tree(src)))
+    # legacy plain-signature entries are understood (as "keep")
+    make_zip(f"{src}/k/old.zip", {"o.txt": "o"})
+    json.dump({f"{src}/k/old.zip": eng._signature(f"{src}/k/old.zip")}, open(kf, "w"))
+    s2 = run(eng, cfg, trigger="schedule")
+    check("keep: legacy entry format still skips", s2["extracted"] == 0 and "k/o.txt" not in tree(src), (s2, tree(src)))
     shutil.rmtree(work)
 
 
@@ -504,10 +533,26 @@ def test_overwrite_off_keeps_archive():
           "x.zip" in tree(src) and s["extracted"] == 1 and s["failed"] == 0 and s["remaining"] == 0, s)
     msgs = " ".join(e["msg"] for e in eng.log_since(0, 1000))
     check("overwrite off: warning names the count", "Kept 1 file(s)" in msgs, msgs[-300:])
-    for f in ("same.txt", "other.txt", "d/deep.txt"):
-        os.remove(f"{src}/{f}")                                # nothing clashes any more
+    kf = os.path.join(work, "cfg", "kept-archives.json")
+    check("overwrite off: recorded as kept (exists)", json.load(open(kf))[f"{src}/x.zip"]["why"] == "exists", open(kf).read())
+    n = len(eng.log_since(0, 2000))
+    s = run(eng, base_cfg(sources=[src], overwrite=False), trigger="schedule")
+    new_msgs = [e["msg"] for e in eng.log_since(0, 2000)[n:]]
+    check("overwrite off: next scan does not extract it again, counts nothing",
+          not any("Extracting" in m or "x.zip" in m for m in new_msgs) and s["extracted"] == 0
+          and s["skipped"] == 0 and s["found"] == 0 and s["remaining"] == 0, (s, new_msgs))
+    s = run(eng, base_cfg(sources=[src], overwrite=True), trigger="schedule")
+    check("overwrite on: archive is processed once and removed",
+          s["extracted"] == 1 and "x.zip" not in tree(src) and json.load(open(kf)) == {}, (s, tree(src)))
+    open(f"{src}/same.txt", "w").write("mine")
+    make_zip(f"{src}/y.zip", {"same.txt": "new", "z.txt": "z"})
     run(eng, base_cfg(sources=[src], overwrite=False))
-    check("overwrite off: archive removed once nothing clashes", "x.zip" not in tree(src) and "same.txt" in tree(src), tree(src))
+    for f in ("same.txt", "z.txt"):
+        os.remove(f"{src}/{f}")                                # nothing clashes any more
+    changed = time.time() + 5
+    os.utime(f"{src}/y.zip", (changed, changed))               # the archive changed: tried again
+    run(eng, base_cfg(sources=[src], overwrite=False), trigger="schedule")
+    check("overwrite off: archive removed once nothing clashes", "y.zip" not in tree(src) and "z.txt" in tree(src), tree(src))
     shutil.rmtree(work)
 
 

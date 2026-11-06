@@ -106,7 +106,11 @@ class Engine:
         self.cancelled_path = os.path.join(os.path.dirname(history_path) or ".", "cancelled-archives.json")
         # archives that failed for good (even when tried alone): scheduled scans leave them alone until they change
         self.failed_file = os.path.join(os.path.dirname(history_path) or ".", "failed-archives.json")
-        self._cancelled_mem = {}     # both files are read once per run and kept here
+        # archives extracted and left in place (action "keep", or files skipped with overwrite off):
+        # scans leave them alone until they change; {path: {"sig": ..., "why": "keep"|"exists"}}
+        self.kept_file = os.path.join(os.path.dirname(history_path) or ".", "kept-archives.json")
+        self._kept_mem = {}
+        self._cancelled_mem = {}     # the files are read once per run and kept here
         self._failed_mem = {}
         self.skipped = 0             # archives left alone because they failed / were cancelled earlier and have not changed
         self.tools = which_tools()
@@ -295,6 +299,8 @@ class Engine:
             self._mounts = mounts.list_mounts(os.path.dirname(self.history_path) or "/data")
             self._cancelled_mem = self._load_remembered(self.cancelled_path)
             self._failed_mem = self._load_remembered(self.failed_file)
+            self._kept_mem = self._load_remembered(self.kept_file)
+            cfg["_oneoff"] = bool(oneoff)
             sources = []
             if oneoff:
                 target = os.path.realpath(oneoff["path"])
@@ -468,6 +474,8 @@ class Engine:
             for fn in filenames:
                 if is_archive(fn) and not is_secondary_volume(fn):
                     p = os.path.join(dirpath, fn)
+                    if self._kept_skip(p, cfg):
+                        continue
                     if self._eligible(p, cfg):
                         self._register(p)
 
@@ -480,7 +488,8 @@ class Engine:
             return out
         for e in entries:
             if (e.is_file(follow_symlinks=False) and is_archive(e.name)
-                    and not is_secondary_volume(e.name) and self._eligible(e.path, cfg)):
+                    and not is_secondary_volume(e.name) and not self._kept_skip(e.path, cfg)
+                    and self._eligible(e.path, cfg)):
                 out.append(e.path)
         return out
 
@@ -648,6 +657,31 @@ class Engine:
                 return "failed"
         return ""
 
+    def _kept_skip(self, path, cfg):
+        """True when a normal scan should quietly pass over this archive: it was extracted and left in place,
+        has not changed, and the current settings would leave it there again. One-off jobs never skip."""
+        if cfg.get("_oneoff"):
+            return False
+        with self.cancel_file_lock:
+            e = self._kept_mem.get(path)
+            if e is None:
+                return False
+            sig, why = (e.get("sig"), e.get("why", "keep")) if isinstance(e, dict) else (e, "keep")
+            if sig != self._signature(path):
+                return False
+        if why == "exists":
+            return not cfg["overwrite"]
+        return cfg["archive_mode"] == "keep"
+
+    def _remember_kept(self, path, why):
+        """Record every volume of the set as extracted and left in place."""
+        with self.cancel_file_lock:
+            sig = self._signature(path)
+            for f in self._archive_group(path):
+                self._kept_mem.pop(f, None)
+                self._kept_mem[f] = {"sig": sig, "why": why}
+            self._save_remembered(self.kept_file, self._kept_mem)
+
     def _remember(self, kind, path):
         """Remember a cancelled/failed archive with its signature."""
         with self.cancel_file_lock:
@@ -663,6 +697,8 @@ class Engine:
             for mem, file in ((self._cancelled_mem, self.cancelled_path), (self._failed_mem, self.failed_file)):
                 if mem.pop(path, None) is not None:
                     self._save_remembered(file, mem)
+            if any([self._kept_mem.pop(f, None) is not None for f in self._archive_group(path) + [path]]):
+                self._save_remembered(self.kept_file, self._kept_mem)
 
     def _work(self, path, root, cfg, final):
         """Returns "ok", "retry" (failed - try again alone later) or "fail"."""
@@ -703,6 +739,10 @@ class Engine:
                 else:
                     disposed = False
                 if disposed:
+                    if out.get("skipped"):
+                        self._remember_kept(path, "exists")
+                    elif cfg["archive_mode"] == "keep":
+                        self._remember_kept(path, "keep")
                     with self.lock:
                         self.status["extracted"] += 1
                         self.status["files_out"] += out["files"]
