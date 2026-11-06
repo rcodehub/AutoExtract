@@ -19,8 +19,8 @@ DEFAULTS = {
     "min_age_minutes": 5,             # ignore archives modified more recently than this (still downloading)
     "max_passes": 25,                 # nesting-depth safety cap per directory
     "overwrite": True,                # overwrite existing files when extracting
-    "archive_mode": "delete",         # after a successful extract: recycle (share's .Recycle.Bin) | delete | move
-    "junk_mode": "delete",            # junk files: recycle | delete | move
+    "archive_mode": "keep",           # after a successful extract: recycle (share's .Recycle.Bin) | delete | move | keep
+    "junk_mode": "keep",              # junk files: recycle | delete | move | keep (leave in place)
     "move_dir": "",                   # where "move" puts things
     "junk_patterns": ["*.diz"],       # file name patterns (case-insensitive)
     "exclude_dirs": ["@eaDir", ".Recycle.Bin", "#recycle", ".Trash*"],
@@ -35,13 +35,14 @@ DEFAULTS = {
 _lock = threading.Lock()
 
 
-MODES = ("recycle", "delete", "move")
+MODES = ("recycle", "delete", "move", "keep")
 
 
 def env_defaults():
     """First-start settings, from the folders mapped in the template: /downloads is scanned; processed archives
     and junk go to /trash if it is mapped, otherwise to the share's Recycle Bin (.Recycle.Bin, as used by the
-    Unraid Recycle Bin plugin) when the share root can be reached, otherwise they are deleted."""
+    Unraid Recycle Bin plugin) when the share root can be reached, otherwise they are kept where they are (nothing is
+    ever deleted by default)."""
     d = dict(DEFAULTS)
     d["sources"] = mounts.suggested_sources(CONFIG_DIR)
     move = mounts.suggested_move_dir(CONFIG_DIR)
@@ -71,19 +72,34 @@ def _within(path, parent):
     return path == parent or path.startswith(parent.rstrip(os.sep) + os.sep)
 
 
-def validate(data):
-    """Return (clean_settings, errors). Unknown keys are dropped, missing ones get defaults."""
+def validate(data, mapped=False):
+    """Return (clean_settings, errors). Unknown keys are dropped, missing ones get defaults.
+    mapped=True also requires the source and move folders to be inside folders mapped into the container
+    (what save() and load() do; the mappings are read from the mount table)."""
+    s, errors, _ = _validate(data, mapped)
+    return s, errors
+
+
+def _validate(data, mapped=True):
+    """Return (clean_settings, errors, bad) where bad maps a setting name to the problems found with it
+    (for sources: the offending paths), so a lenient load can reset just those values."""
     errors = []
+    bad = {}
     s = dict(DEFAULTS)
+    roots = mounts.browse_roots(CONFIG_DIR) if mapped else None
+
+    def err(key, msg, path=None):
+        errors.append(msg)
+        bad.setdefault(key, []).append(path)
 
     def num(key, lo, hi, label):
         try:
             v = int(data.get(key, s[key]))
         except (TypeError, ValueError):
-            errors.append(f"{label} must be a whole number")
+            err(key, f"{label} must be a whole number")
             return
         if not lo <= v <= hi:
-            errors.append(f"{label} must be between {lo} and {hi}")
+            err(key, f"{label} must be between {lo} and {hi}")
             return
         s[key] = v
 
@@ -94,9 +110,13 @@ def validate(data):
     s["sources"] = [os.path.normpath(p) for p in _lines(data.get("sources", s["sources"]))]
     for p in s["sources"]:
         if not p.startswith("/"):
-            errors.append(f"Source folder must be an absolute path: {p}")
-        elif _within(p, CONFIG_DIR):
-            errors.append(f"Source folder {p} is the app data folder - choose a folder to scan such as /downloads")
+            err("sources", f"Source folder must be an absolute path: {p}", p)
+        elif _within(p, CONFIG_DIR) or _within(CONFIG_DIR, p):
+            err("sources", f"Source folder {p} is or contains the app data folder - choose a folder to scan "
+                           "such as /downloads", p)
+        elif roots is not None and not mounts.inside_roots(p, roots):
+            err("sources", f"Source folder {p} is not inside a folder mapped into the container "
+                           "(such as /downloads or /mnt/user)", p)
 
     for k in ("schedule_enabled", "run_on_start", "overwrite", "set_perms", "chown_enabled"):
         boolean(k)
@@ -110,7 +130,7 @@ def validate(data):
     for k, label in (("archive_mode", "Archive action"), ("junk_mode", "Junk action")):
         v = str(data.get(k, s[k])).lower()
         if v not in MODES:
-            errors.append(f"{label} must be recycle, delete or move")
+            errors.append(f"{label} must be recycle, delete, move or keep")
         else:
             s[k] = v
 
@@ -120,25 +140,54 @@ def validate(data):
     for k, label in (("file_mode", "File permissions"), ("dir_mode", "Folder permissions")):
         v = str(data.get(k, s[k])).strip()
         if not re.fullmatch(r"[0-7]{3,4}", v):
-            errors.append(f"{label} must be an octal mode such as 666 or 777")
+            err(k, f"{label} must be an octal mode such as 666 or 777")
         else:
             s[k] = v
 
     s["move_dir"] = str(data.get("move_dir", "") or "").strip()
     if s["move_dir"]:
         s["move_dir"] = os.path.normpath(s["move_dir"])
-        if not s["move_dir"].startswith("/"):
-            errors.append("Move folder must be an absolute path")
-        for src in s["sources"]:
-            if _within(s["move_dir"], src):
-                errors.append(f"Move folder {s['move_dir']} must not be inside the source folder {src}")
-            elif _within(src, s["move_dir"]):
-                errors.append(f"Source folder {src} must not be inside the move folder {s['move_dir']} - "
-                              "give the scanned folder and the processed folder separate mappings")
+        md = s["move_dir"]
+        if not md.startswith("/"):
+            err("move_dir", "Move folder must be an absolute path")
+        elif _within(md, CONFIG_DIR) or _within(CONFIG_DIR, md):
+            err("move_dir", f"Move folder {md} is or contains the app data folder - choose a separate folder "
+                            "such as /trash")
+        elif roots is not None and not mounts.inside_roots(md, roots):
+            err("move_dir", f"Move folder {md} is not inside a folder mapped into the container "
+                            "(such as /trash or /mnt/user)")
+        else:
+            for src in s["sources"]:
+                if _within(md, src):
+                    err("move_dir", f"Move folder {md} must not be inside the source folder {src}")
+                elif _within(src, md):
+                    err("move_dir", f"Source folder {src} must not be inside the move folder {md} - "
+                                    "give the scanned folder and the processed folder separate mappings")
     if "move" in (s["archive_mode"], s["junk_mode"]) and not s["move_dir"]:
-        errors.append("A move folder is required when an action is set to move")
+        err("move_dir", "A move folder is required when an action is set to move")
 
-    return s, errors
+    return s, errors, bad
+
+
+def _lenient(data):
+    """Validate saved settings; every value that fails is replaced by its default (a bad source folder is
+    dropped from the list), everything else is kept. Returns (settings, problems)."""
+    clean, problems, bad = _validate(data)
+    if not problems:
+        return clean, problems
+    fixed = dict(clean)
+    for key, items in bad.items():
+        if key == "sources":
+            fixed[key] = [p for p in clean[key] if p not in items]
+        else:
+            fixed[key] = DEFAULTS[key]
+    for k in ("archive_mode", "junk_mode"):   # "move" needs a move folder
+        if fixed[k] == "move" and not fixed["move_dir"]:
+            fixed[k] = DEFAULTS[k]
+    final, left, _ = _validate(fixed)
+    if left:                                  # should not happen; never return something that fails validation
+        final = _validate(DEFAULTS)[0]
+    return final, problems
 
 
 def load_with_report():
@@ -159,7 +208,7 @@ def load_with_report():
             source = "unreadable"
         if data is None:                      # nothing usable saved: first-run defaults
             data = env_defaults()
-        clean, problems = validate(data)
+        clean, problems = _lenient(data)
         return clean, problems, source
 
 
@@ -177,7 +226,7 @@ def storage_info():
 
 
 def save(data):
-    clean, errors = validate(data)
+    clean, errors = validate(data, mapped=True)
     if errors:
         return None, errors
     with _lock:

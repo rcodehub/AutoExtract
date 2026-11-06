@@ -100,14 +100,61 @@ d = c.get("/api/mounts").get_json()
 check("api/mounts", {m["path"] for m in d["mounts"]} >= {dl, proc}, d)
 d = c.get("/api/pathinfo?path=/mnt/user/foo").get_json()
 check("api/pathinfo flags host paths", d["info"]["host_path"] is True, d)
-r = c.post("/api/settings", json={"sources": ["/mnt/user/nope", dl], "move_dir": proc, "archive_mode": "move"})
+r = c.post("/api/settings", json={"sources": [dl + "/nope", dl], "move_dir": proc, "archive_mode": "move"})
 d = c.get("/api/settings").get_json()
 check("api/settings reports per-source info",
-      d["sources_info"]["/mnt/user/nope"]["host_path"] and d["sources_info"][dl]["exists"] and d["move_info"]["exists"], d.get("sources_info"))
+      r.status_code == 200 and not d["sources_info"][dl + "/nope"]["exists"] and d["sources_info"][dl + "/nope"]["mount"] == dl
+      and d["sources_info"][dl]["exists"] and d["move_info"]["exists"], d.get("sources_info"))
+
+# --- sources / move folder must be inside mapped folders, away from the app data folder
+r = c.post("/api/settings", json={"sources": ["/mnt/user/nope"]})
+check("unmapped source refused on save", r.status_code == 400 and "not inside a folder mapped" in str(r.get_json()), r.get_json())
+r = c.post("/api/settings", json={"sources": [dl], "archive_mode": "move", "move_dir": "/tmp/elsewhere"})
+check("unmapped move folder refused on save", r.status_code == 400 and "not inside a folder mapped" in str(r.get_json()), r.get_json())
+r = c.post("/api/settings", json={"sources": [dl], "archive_mode": "move", "move_dir": cfg + "/moved"})
+check("move folder inside app data refused", r.status_code == 400 and "app data folder" in str(r.get_json()), r.get_json())
+s_, e_ = settings.validate({"sources": [dl], "archive_mode": "move", "move_dir": os.path.dirname(cfg)})
+check("move folder containing app data refused", any("app data folder" in x for x in e_), e_)
+s_, e_ = settings.validate({"sources": [os.path.dirname(cfg)]})
+check("source containing app data refused", any("app data folder" in x for x in e_), e_)
+r = c.post("/api/settings", json={"sources": [dl], "archive_mode": "keep", "junk_mode": "keep"})
+check("keep is a valid action", r.status_code == 200 and settings.load()["archive_mode"] == "keep", r.get_json())
+r = c.post("/api/settings", json={"sources": [dl], "archive_mode": "shred"})
+check("unknown action refused", r.status_code == 400)
+check("default action is keep", settings.DEFAULTS["archive_mode"] == "keep" and settings.DEFAULTS["junk_mode"] == "keep")
+
+# --- JSON bodies that are not objects: 400, never 500
+for url in ("/api/settings", "/api/run", "/api/run-folder", "/api/cancel", "/api/ui"):
+    for body in ("[1, 2]", '"text"', "42", "null", "{broken"):
+        r = c.post(url, data=body, content_type="application/json")
+        check(f"{url}: body {body} gives 400", r.status_code == 400 and r.get_json().get("error"), (r.status_code, r.get_data(as_text=True)[:80]))
+check("empty body still accepted by /api/cancel", c.post("/api/cancel").status_code in (200, 409))
+
+# --- stats file: tolerant load, no shared tmp file, junk marks the data dirty
+import json as _json
+import stats as _stats
+import threading as _th
+sp = os.path.join(root, "stats-test.json")
+open(sp, "w").write(_json.dumps({"since": "x", "totals": [], "types": 5, "days": None, "records": {}}))
+st = _stats.Stats(sp)
+check("stats: wrong-typed keys fall back to blank", st.data["totals"]["archives"] == 0 and st.data["types"] == {}
+      and st.data["days"] == {} and isinstance(st.data["since"], float), st.data)
+open(sp, "w").write("[1, 2]")
+check("stats: non-object file falls back to blank", _stats.Stats(sp).data["totals"]["runs"] == 0)
+st = _stats.Stats(sp)
+ts = [_th.Thread(target=lambda: [st.save() for _ in range(30)]) for _ in range(6)]
+[t.start() for t in ts]
+[t.join() for t in ts]
+check("stats: parallel saves leave a valid file and no temp files",
+      isinstance(_json.load(open(sp)), dict) and [f for f in os.listdir(root) if f.startswith("stats.")] == [])
+for _ in range(10):
+    st.junk(5, "delete")
+check("stats: junk() marks data dirty (saved after 10)", _json.load(open(sp))["totals"]["junk"] == 10)
 
 # --- persistence: a bad value must not wipe the good ones; problems and storage are reported
 import json
 import settings as S
+_json_dumps = json.dumps
 open(S.SETTINGS_PATH, "w").write(json.dumps({"sources": [dl], "threads": 7, "interval_minutes": "oops",
                                               "junk_patterns": ["*.nfo"], "schedule_enabled": True}))
 cfg_now, problems, source = S.load_with_report()
@@ -118,6 +165,12 @@ d = c.get("/api/settings").get_json()
 check("api/settings exposes problems + storage",
       d["problems"] and d["storage"]["source"] == "file" and d["storage"]["path"] == S.SETTINGS_PATH
       and d["storage"]["saved_at"] and d["storage"]["config_mapped"] is True, d.get("storage"))
+open(S.SETTINGS_PATH, "w").write(_json_dumps({"sources": [dl, "/etc", "/mnt/user/nope"], "move_dir": cfg + "/m",
+                                              "archive_mode": "move", "junk_mode": "recycle", "threads": 9}))
+cfg_now, problems, source = S.load_with_report()
+check("lenient load: bad paths reset, the rest kept",
+      cfg_now["sources"] == [dl] and cfg_now["move_dir"] == "" and cfg_now["archive_mode"] == S.DEFAULTS["archive_mode"]
+      and cfg_now["junk_mode"] == "recycle" and cfg_now["threads"] == 9 and len(problems) >= 3, (cfg_now, problems))
 open(S.SETTINGS_PATH, "w").write("{not json")
 _, problems, source = S.load_with_report()
 check("unreadable file reported", source == "unreadable", source)
@@ -161,7 +214,7 @@ d = c.get("/api/log?after=0").get_json()
 check("log: cleared", r.status_code == 200 and not d["entries"] and d["cleared"] == d["last"], d)
 
 # --- scheduler: a scan that finishes between two ticks must not start the next one at once
-empty = os.path.join(root, "empty-src")
+empty = os.path.join(dl, "empty-src")
 os.makedirs(os.path.join(empty, "leftover-folder"))
 r = c.post("/api/settings", json={"sources": [empty], "schedule_enabled": True, "interval_minutes": 5,
                                    "run_on_start": False})
@@ -206,6 +259,14 @@ if os.path.exists(os.path.join(cfg, "settings.json")):
 seed = settings.load()
 check("first start without /trash: Recycle Bin when the share root is reachable",
       seed["archive_mode"] == "recycle" and seed["junk_mode"] == "recycle", seed)
+# ... and when the share root can't be reached the archives are kept, not deleted
+real_mi = mounts.MOUNTINFO
+nested = os.path.join(root, "mountinfo-nested")
+open(nested, "w").write(f"31 1 0:31 /share/sub {dl} rw - fuse.shfs shfs rw\n")
+mounts.MOUNTINFO = nested
+seed = settings.load()
+check("first start, Recycle Bin unreachable: archives are kept", seed["archive_mode"] == "keep" and seed["junk_mode"] == "keep", seed)
+mounts.MOUNTINFO = real_mi
 mounts.TRASH_DIR = proc
 r = c.post("/api/run-folder", json={"path": "/nope/missing"})
 check("one-off: missing folder refused", r.status_code == 400)
