@@ -44,6 +44,29 @@ check("username is case-insensitive and trimmed", c.get("/api/status").status_co
 import base64
 h = {"Authorization": "Basic " + base64.b64encode(b"Justin:p@ss w0rd:with/odd$chars").decode()}
 check("basic auth still works for scripts", m.app.test_client().get("/api/status", headers=h).status_code == 200)
+# basic auth shares the lockout counter and is logged without control characters
+import io
+import contextlib
+bad = lambda u, p="x": {"Authorization": "Basic " + base64.b64encode(f"{u}:{p}".encode()).decode()}
+m._fails.clear()
+cb = m.app.test_client()
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    for _ in range(8):
+        r = cb.get("/api/status", headers=bad("evil\r\n[auth] fake line\x1b[2J"))
+check("basic auth failure is rejected", r.status_code == 401)
+log = buf.getvalue()
+check("basic auth failures are logged", log.count("failed basic auth") == 8, log)
+check("control characters are stripped from the logged name", "\r" not in log and "\x1b" not in log
+      and all(l.startswith("[auth]") for l in log.splitlines()), repr(log))
+r = cb.get("/api/status", headers=h)
+check("basic auth is refused while locked out, even with the right password", r.status_code == 429)
+check("login form is locked out too (same counter)", "e=locked" in cb.post("/login", data={"username": "Justin", "password": "p@ss w0rd:with/odd$chars"}).headers["Location"])
+m._fails.clear()
+check("lockout cleared: right password works again", m.app.test_client().get("/api/status", headers=h).status_code == 200)
+m._fails["9.9.9.9"] = [0.0]
+m._locked("1.1.1.1")
+check("old entries are pruned from the failure table", "9.9.9.9" not in m._fails, m._fails)
 c2 = m.app.test_client()
 for _ in range(8):
     c2.post("/login", data={"username": "x", "password": "y"})

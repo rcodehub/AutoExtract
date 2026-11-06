@@ -5,4 +5,4 @@ __pycache__
 *.pyc
 README.md
 docker-compose.yml
-extract-archives.xml
+autoextract.xml

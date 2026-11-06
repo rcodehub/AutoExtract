@@ -1,6 +1,7 @@
 """Lifetime statistics, kept in /data/stats.json (survive restarts and updates)."""
 import json
 import os
+import tempfile
 import threading
 import time
 
@@ -27,6 +28,7 @@ class Stats:
     def __init__(self, path):
         self.path = path
         self.lock = threading.Lock()
+        self.save_lock = threading.Lock()      # one writer at a time; the data lock is never held while writing
         self.data = self._load()
         self._dirty = 0
 
@@ -35,25 +37,39 @@ class Stats:
             with open(self.path) as f:
                 d = json.load(f)
             b = blank()
-            for k in b:
-                d.setdefault(k, b[k])
+            if not isinstance(d, dict):
+                return b
+            for k in b:                       # a missing or wrong-typed key falls back to blank
+                want = (int, float) if k == "since" else type(b[k])
+                if not isinstance(d.get(k), want) or isinstance(d.get(k), bool):
+                    d[k] = b[k]
             for k in TOTAL_KEYS:
-                d["totals"].setdefault(k, 0)
+                if isinstance(d["totals"].get(k), bool) or not isinstance(d["totals"].get(k), (int, float)):
+                    d["totals"][k] = 0
             return d
-        except (OSError, ValueError, AttributeError):
+        except (OSError, ValueError, AttributeError, TypeError):
             return blank()
 
     def save(self):
-        with self.lock:
-            snap = json.dumps(self.data)
-            self._dirty = 0
-        try:
-            tmp = self.path + ".tmp"
-            with open(tmp, "w") as f:
-                f.write(snap)
-            os.replace(tmp, self.path)
-        except OSError:
-            pass
+        with self.save_lock:
+            with self.lock:
+                snap = json.dumps(self.data)
+                self._dirty = 0
+            tmp = None
+            try:
+                fd, tmp = tempfile.mkstemp(prefix="stats.", suffix=".tmp", dir=os.path.dirname(self.path) or ".")
+                with os.fdopen(fd, "w") as f:
+                    f.write(snap)
+                os.replace(tmp, self.path)
+                tmp = None
+            except OSError:
+                pass
+            finally:
+                if tmp:
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
 
     def _day(self):
         days = self.data["days"]
@@ -101,6 +117,10 @@ class Stats:
             key = {"delete": "freed", "move": "moved", "recycle": "recycled"}.get(mode)
             if key:
                 self.data["totals"][key] += size
+            self._dirty += 1
+            due = self._dirty >= 10
+        if due:
+            self.save()
 
     def failed(self):
         with self.lock:

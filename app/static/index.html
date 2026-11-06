@@ -240,6 +240,7 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
         <div><b id="cJunk">0</b><span>junk handled</span></div>
         <div><b id="cDef">0</b><span>too recent (skipped)</span></div>
         <div id="cCanBox" hidden><b id="cCan">0</b><span>cancelled</span></div>
+        <div id="cSkBox" hidden><b id="cSk">0</b><span>skipped</span></div>
         <div><b id="cData">0 B</b><span>data extracted</span></div>
       </div>
     </section>
@@ -318,10 +319,11 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
       <h2>After extracting</h2>
       <div class="two">
         <div class="field"><label for="archive_mode">Archives that extracted fine</label>
-          <select id="archive_mode"><option value="recycle">Move to the share's Recycle Bin</option><option value="delete">Delete</option><option value="move">Move to the move folder</option></select></div>
+          <select id="archive_mode"><option value="recycle">Move to the share's Recycle Bin</option><option value="delete">Delete</option><option value="move">Move to the move folder</option><option value="keep">Keep (leave where they are)</option></select></div>
         <div class="field"><label for="junk_mode">Junk files</label>
-          <select id="junk_mode"><option value="recycle">Move to the share's Recycle Bin</option><option value="delete">Delete</option><option value="move">Move to the move folder</option></select></div>
+          <select id="junk_mode"><option value="recycle">Move to the share's Recycle Bin</option><option value="delete">Delete</option><option value="move">Move to the move folder</option><option value="keep">Keep (leave where they are)</option></select></div>
       </div>
+      <div class="hint" style="margin:-4px 0 10px"><b>Keep</b> leaves the archives (or junk files) where they are and does not extract the same archive again; nothing is ever removed. It is the safe choice until you have seen a scan work. <b>Delete</b> removes them for good.</div>
       <div id="recycleInfo" class="field"></div>
       <div class="field" id="moveField"><label for="move_dir">Move folder</label>
         <div class="row"><input type="text" id="move_dir" placeholder="/trash"><button class="small" id="browseMove">Browse</button></div>
@@ -581,6 +583,7 @@ function renderStatus(d) {
 
   // threads
   $("cCanBox").hidden = !e.cancelled; $("cCan").textContent = e.cancelled || 0;
+  $("cSkBox").hidden = !e.skipped; $("cSk").textContent = e.skipped || 0;       // only when the server reports it
   const tb = $("threads");
   if (!e.slots.length) {
     if (!tb.querySelector("td.none")) tb.replaceChildren(h("tr", {}, h("td", { colspan: 4, class: "idle none" }, "Not running")));
@@ -725,22 +728,57 @@ function addSource(path) {
 let mountList = [];
 const fmtBytes = (n) => n == null ? "" : n >= 1e12 ? (n / 1e12).toFixed(1) + " TB" : n >= 1e9 ? (n / 1e9).toFixed(0) + " GB" : (n / 1e6).toFixed(0) + " MB";
 
+let configDir = "/data", locSeq = 0;
+
+// Live view of the folders in use: built from what is typed in the form right now, not from the template.
+async function renderLocations() {
+  const box = $("locBox"); if (!box) return;
+  const mine = ++locSeq;
+  const am = $("archive_mode").value, jm = $("junk_mode").value;
+  const srcs = [...$("sources").querySelectorAll("input")].map((i) => i.value.trim()).filter(Boolean);
+  const rows = [["App data", configDir]];
+  for (const p of srcs) rows.push(["Extract", p]);
+  if (am === "move" || jm === "move") rows.push(["Move folder", $("move_dir").value.trim()]);
+  const infos = await Promise.all(rows.map(([, p]) => p
+    ? api("/api/pathinfo?path=" + encodeURIComponent(p)).then((r) => r.info).catch(() => null) : null));
+  const bins = am === "recycle" || jm === "recycle" ? await Promise.all(srcs.map((p) =>
+    api("/api/recycle?path=" + encodeURIComponent(p)).then((r) => r.info).catch(() => null))) : [];
+  if (mine !== locSeq) return;                     // a newer update is already on its way
+  const cells = [];
+  rows.forEach(([label, p], i) => {
+    const info = infos[i];
+    let val;
+    if (!p) val = h("span", { class: "na" }, "not set");
+    else if (!info) val = h("span", { class: "na" }, "checking...");
+    else if (!info.exists) val = h("span", { class: "na" }, "not mapped - this folder does not exist in the container");
+    else if (info.host) val = h("span", { class: "path" }, info.host);
+    else val = h("span", { class: "muted" }, "inside " + (info.mount || "the container") + " (server path not detectable)");
+    cells.push(h("span", {}, h("span", { class: "path" }, p || "-"), " ", h("span", { class: "muted small" }, label)), val);
+  });
+  bins.forEach((b) => {
+    if (!b) return;
+    const val = !b.ok ? h("span", { class: "na" }, "not reachable: " + b.why)
+      : h("span", {}, h("span", { class: "path" }, b.host || b.bin),
+          h("span", { class: "muted small" }, b.exists ? " - " + b.items + " item" + (b.items === 1 ? "" : "s") + " inside" : " - created on first use"));
+    cells.push(h("span", {}, h("span", { class: "path" }, b.bin || "-"), " ", h("span", { class: "muted small" }, "Recycle Bin")), val);
+  });
+  box.replaceChildren(...cells);
+}
+const refreshLoc = (() => { let t; return () => { clearTimeout(t); t = setTimeout(() => renderLocations().catch(() => {}), 350); }; })();
+for (const id of ["move_dir", "archive_mode", "junk_mode"]) { $(id).addEventListener("input", refreshLoc); $(id).addEventListener("change", refreshLoc); }
+new MutationObserver(refreshLoc).observe($("sources"), { childList: true });
+$("sources").addEventListener("input", refreshLoc);
+$("sources").addEventListener("change", refreshLoc);
+
 async function loadMounts() {
   const d = await api("/api/mounts");
   mountList = d.mounts;
   const box = $("mountsBox"); box.replaceChildren();
   const data = d.mounts.filter((m) => !m.config);
-  box.append(h("h3", {}, "Template paths on your server"));
-  const hp = h("div", { class: "hostpaths" });
-  const byPath = Object.fromEntries(d.mounts.map((m) => [m.path, m]));
-  for (const [cp, label] of [["/downloads", "Folder to scan"], ["/trash", "Trash folder"], ["/mnt/user", "All shares"], [d.config_dir, "App data"]]) {
-    const m = byPath[cp];
-    const val = !m ? h("span", { class: "na" }, "not mapped")
-      : m.host ? h("span", { class: "path" }, m.host)
-      : h("span", { class: "muted" }, "device " + m.device + (m.root && m.root !== "/" ? ", folder " + m.root : "") + " (pool path not detectable)");
-    hp.append(h("span", {}, h("span", { class: "path" }, cp), " ", h("span", { class: "muted small" }, label)), val);
-  }
-  box.append(hp);
+  box.append(h("h3", {}, "Where your folders are on the server"));
+  box.append(h("div", { class: "hostpaths", id: "locBox" }));
+  configDir = d.config_dir;
+  renderLocations();
   box.append(h("h3", {}, "Folders mapped into this container"));
   if (!data.length) {
     box.append(h("div", { class: "banner warn" }, "No data folders are mapped into this container yet. In Unraid: Docker tab -> AutoExtract -> Edit, set the Host Path of \"Folder to scan\" to the share you want scanned (the Container Path should be /downloads), press Apply, then reload this page."));
@@ -822,7 +860,7 @@ $("archive_mode").addEventListener("change", syncMove);
 $("junk_mode").addEventListener("change", syncMove);
 $("addSource").addEventListener("click", () => $("sources").append(sourceRow("")));
 bindCheck($("move_dir"), $("moveStatus"));
-$("browseMove").addEventListener("click", () => pickFolder($("move_dir").value || "/", (p) => { $("move_dir").value = p; }));
+$("browseMove").addEventListener("click", () => pickFolder($("move_dir").value || "", (p) => { $("move_dir").value = p; $("move_dir").dispatchEvent(new Event("change")); }));
 
 function collect() {
   const num = (id) => parseInt($(id).value, 10);
@@ -856,14 +894,19 @@ $("btnSave").addEventListener("click", async () => {
 // ---------------------------------------------------------------- folder picker
 let pickCb = null, pickPath = "/";
 async function browse(path) {
-  const d = await api("/api/browse?path=" + encodeURIComponent(path || "/"));
+  const d = await api("/api/browse?path=" + encodeURIComponent(path));
   pickPath = d.path;
-  $("dlgPath").textContent = d.top ? "Choose a mapped folder" : d.path;
-  $("dlgOk").disabled = !!d.top;
+  const top = !!d.top;
+  $("dlgPath").textContent = top ? "Mapped folders" : d.path;
+  $("dlgOk").disabled = top;                          // nothing to select until a mapped folder is opened
   const list = $("dlgList"); list.replaceChildren();
-  if (d.parent != null) list.append(h("div", { onclick: () => browse(d.parent) }, d.parent === "" ? ".. (mapped folders)" : ".. (up)"));
-  if (d.top) for (const p of d.dirs) list.append(h("div", { onclick: () => browse(p) }, p + "/"));
-  else for (const n of d.dirs) list.append(h("div", { onclick: () => browse(d.path + "/" + n) }, n + "/"));
+  if (top) {
+    if (!d.dirs.length) list.append(h("div", { class: "missing" }, d.error || "No folders are mapped into this container. Add a Path in the Unraid template (Edit the container) first."));
+    for (const r of d.dirs) list.append(h("div", { onclick: () => browse(r) }, r + "/"));
+    return;
+  }
+  list.append(h("div", { onclick: () => browse(d.parent) }, d.parent === "" ? ".. (mapped folders)" : ".. (up)"));
+  for (const n of d.dirs) list.append(h("div", { onclick: () => browse((d.path === "/" ? "" : d.path) + "/" + n) }, n + "/"));
   if (d.error) list.append(h("div", { class: "missing" }, d.error));
 }
 function pickFolder(start, cb) {
@@ -874,7 +917,7 @@ function pickFolder(start, cb) {
     sc.append(h("span", {}, "Mapped folders:"));
     for (const m of data) sc.append(h("button", { class: "small", onclick: () => browse(m.path) }, m.path));
   }
-  browse(start).catch(() => browse("")); $("dlg").showModal();
+  browse(start || "").catch(() => browse("")); $("dlg").showModal();
 }
 $("dlgCancel").addEventListener("click", () => $("dlg").close());
 $("dlgOk").addEventListener("click", () => { if (pickCb) pickCb(pickPath); $("dlg").close(); });
@@ -889,7 +932,7 @@ async function loadHistory() {
     const row = h("tr", {},
       h("td", {}, fmtTime(r.started_at)), h("td", {}, (r.dry_run ? "dry run, " : "") + r.trigger),
       h("td", {}, res + (r.message ? " - " + r.message : "")),
-      h("td", {}, r.found), h("td", {}, r.extracted), h("td", {}, r.failed + (r.cancelled ? " (+" + r.cancelled + " cancelled)" : "")), h("td", {}, r.junk),
+      h("td", {}, r.found), h("td", {}, r.extracted), h("td", {}, r.failed + (r.cancelled ? " (+" + r.cancelled + " cancelled)" : "") + (r.skipped ? " (+" + r.skipped + " skipped)" : "")), h("td", {}, r.junk),
       h("td", {}, r.bytes_out != null ? fmtSize(r.bytes_out) : "-"),
       h("td", {}, dur(r.finished_at - r.started_at)));
     tb.append(row);
