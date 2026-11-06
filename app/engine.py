@@ -85,6 +85,10 @@ def explain(tool, code):
     return {"unrar": UNRAR_CODES, "unzip": UNZIP_CODES, "7z": SEVENZ_CODES}.get(tool, {}).get(code, "")
 
 
+FUTURE_SLACK = 120                      # seconds a file date may be ahead of the clock before it is not trusted
+MAX_REMEMBERED = 5000                   # entries kept in each "remembered archives" file
+
+
 class Engine:
     def __init__(self, log_dir, history_path):
         self.lock = threading.RLock()
@@ -100,6 +104,11 @@ class Engine:
         self.nested_path = os.path.join(os.path.dirname(history_path) or ".", "extracted-archives.json")
         # archives the user cancelled: scheduled scans leave them alone until they change (Run now retries)
         self.cancelled_path = os.path.join(os.path.dirname(history_path) or ".", "cancelled-archives.json")
+        # archives that failed for good (even when tried alone): scheduled scans leave them alone until they change
+        self.failed_file = os.path.join(os.path.dirname(history_path) or ".", "failed-archives.json")
+        self._cancelled_mem = {}     # both files are read once per run and kept here
+        self._failed_mem = {}
+        self.skipped = 0             # archives left alone because they failed / were cancelled earlier and have not changed
         self.tools = which_tools()
 
         self.log_buf = deque(maxlen=2000)
@@ -209,7 +218,8 @@ class Engine:
             s["found"] = len(self.seen)
             s["failed"] = len(failed)
             s["cancelled"] = self.cancelled
-            s["done"] = s["extracted"] + s["failed"] + self.cancelled
+            s["skipped"] = self.skipped
+            s["done"] = s["extracted"] + s["failed"] + self.cancelled + self.skipped
             s["remaining"] = max(0, s["found"] - s["done"])
             s["deferred"] = len(self.deferred)
             s["waiting"] = self._waiting()
@@ -252,6 +262,7 @@ class Engine:
             self.nested = self._load_nested()
             self.kept = set()            # one-off "keep": extracted, left in place, not extracted again in this run
             self.cancelled = 0
+            self.skipped = 0
             self.cancelled_paths = set()
             self._slot_procs = {}
             self._skip_logged = set()
@@ -282,11 +293,15 @@ class Engine:
         self.log("info", f"=== Run started ({trigger}{', dry run' if dry_run else ''}) ===")
         try:
             self._mounts = mounts.list_mounts(os.path.dirname(self.history_path) or "/data")
+            self._cancelled_mem = self._load_remembered(self.cancelled_path)
+            self._failed_mem = self._load_remembered(self.failed_file)
             sources = []
             if oneoff:
                 target = os.path.realpath(oneoff["path"])
                 if not os.path.isdir(target):
                     raise RuntimeError(f"Folder not found: {target}")
+                if target == os.sep:
+                    raise RuntimeError("The root folder (/) cannot be used here - choose a folder inside one of your shares")
                 sources = [target]
                 if not oneoff.get("recursive", True):
                     # only this folder: skip the sub-folders that are already there (new ones that come out of
@@ -386,6 +401,7 @@ class Engine:
                 "deferred": len(self.deferred),
                 "files_out": st["files_out"], "bytes_out": st["bytes_out"], "bytes_in": st["bytes_in"],
                 "cancelled": self.cancelled,
+                "skipped": self.skipped,
                 "failures": self.failures[-50:],
             }
             self.history.append(entry)
@@ -403,13 +419,23 @@ class Engine:
         return any(fnmatch.fnmatch(low, p.lower()) for p in cfg["exclude_dirs"])
 
     def _group_mtime(self, path):
-        """Newest mtime of the archive and all its other volumes."""
+        """Newest change of the archive and all its other volumes. A file dated in the future (clock or timezone
+        mismatch on the machine that wrote it) would look too new forever, so its change time (when it really
+        arrived on this server) is used instead."""
         newest = 0
+        now = time.time()
         for f in self._archive_group(path):
             try:
-                newest = max(newest, os.path.getmtime(f))
+                st = os.stat(f)
             except OSError:
-                pass
+                continue
+            t = st.st_mtime
+            if t > now + FUTURE_SLACK:
+                t = st.st_ctime
+                self._warn_once(("future", path), f"{os.path.basename(f)} is dated in the future "
+                                f"({time.strftime('%Y-%m-%d %H:%M', time.localtime(st.st_mtime))}) - using the time it "
+                                f"arrived instead: {path}")
+            newest = max(newest, t)
         return newest
 
     def _eligible(self, path, cfg):
@@ -467,7 +493,8 @@ class Engine:
             self.status["current_dir"] = d
         self.log("info", f"Directory: {d}")
 
-        self._remove_stale_stages(d)
+        if not dry:
+            self._remove_stale_stages(d)
         pending = []                     # failed once in parallel: retried alone at the end
         for p in range(1, cfg["max_passes"] + 1):
             if self.stop_event.is_set():
@@ -475,17 +502,21 @@ class Engine:
             with self.lock:
                 self.status["pass"] = p
             todo = []
-            cancelled_before = self._load_cancelled() if cfg.get("_trigger") == "schedule" else {}
+            sched = cfg.get("_trigger") == "schedule"
             for a in self._list_archives(d, cfg):
                 self._register(a)        # picks up nested archives that just appeared
                 if a in self.failed_paths or a in pending or a in self.kept or a in self.cancelled_paths:
                     continue
-                if a in cancelled_before and cancelled_before[a] == self._signature(a):
-                    if a not in self._skip_logged:
-                        self._skip_logged.add(a)
-                        self.log("info", f"Skipped {a}: it was cancelled earlier and has not changed "
-                                         "(Run now or Extract folder... tries it again)")
-                    continue
+                if sched:
+                    why = self._remembered_why(a)
+                    if why:
+                        if a not in self._skip_logged:
+                            self._skip_logged.add(a)
+                            with self.lock:
+                                self.skipped += 1
+                            self.log("info", f"Skipped {a}: it {why} earlier and has not changed "
+                                             "(Run now or Extract folder... tries it again)")
+                        continue
                 todo.append(a)
             did = 0
             if dry:
@@ -582,22 +613,56 @@ class Engine:
                 pass
         return [size, int(newest)]
 
-    def _load_cancelled(self):
+    def _load_remembered(self, path):
         try:
-            with open(self.cancelled_path) as f:
+            with open(path) as f:
                 d = json.load(f)
             return d if isinstance(d, dict) else {}
         except (OSError, ValueError):
             return {}
 
-    def _save_cancelled(self, d):
+    def _save_remembered(self, path, d):
+        """Write a remembered-archives file: entries whose archive is gone are dropped, newest 5000 kept."""
+        for k in [k for k in d if not os.path.exists(k)]:
+            del d[k]
+        for k in list(d)[:-MAX_REMEMBERED]:
+            del d[k]
         try:
-            tmp = self.cancelled_path + ".tmp"
+            tmp = path + ".tmp"
             with open(tmp, "w") as f:
-                json.dump(dict(list(d.items())[-5000:]), f)
-            os.replace(tmp, self.cancelled_path)
+                json.dump(d, f)
+            os.replace(tmp, path)
         except OSError as e:
-            self.log("warn", f"Could not save {self.cancelled_path}: {e}")
+            self.log("warn", f"Could not save {path}: {e}")
+
+    def _remembered_why(self, path):
+        """"was cancelled" / "failed" when this archive is remembered and unchanged since, else ""."""
+        with self.cancel_file_lock:
+            cancelled, failed = path in self._cancelled_mem, path in self._failed_mem
+            if not cancelled and not failed:
+                return ""
+            sig = self._signature(path)
+            if cancelled and self._cancelled_mem[path] == sig:
+                return "was cancelled"
+            if failed and self._failed_mem[path] == sig:
+                return "failed"
+        return ""
+
+    def _remember(self, kind, path):
+        """Remember a cancelled/failed archive with its signature."""
+        with self.cancel_file_lock:
+            mem, file = ((self._cancelled_mem, self.cancelled_path) if kind == "cancelled"
+                         else (self._failed_mem, self.failed_file))
+            mem.pop(path, None)
+            mem[path] = self._signature(path)
+            self._save_remembered(file, mem)
+
+    def _forget(self, path):
+        """The archive was extracted: it is no longer remembered as cancelled or failed."""
+        with self.cancel_file_lock:
+            for mem, file in ((self._cancelled_mem, self.cancelled_path), (self._failed_mem, self.failed_file)):
+                if mem.pop(path, None) is not None:
+                    self._save_remembered(file, mem)
 
     def _work(self, path, root, cfg, final):
         """Returns "ok", "retry" (failed - try again alone later) or "fail"."""
@@ -613,18 +678,12 @@ class Engine:
                 with self.lock:
                     self.cancelled += 1
                     self.cancelled_paths.add(path)
-                with self.cancel_file_lock:
-                    c = self._load_cancelled()
-                    c[path] = self._signature(path)
-                    self._save_cancelled(c)
+                self._remember("cancelled", path)
                 self.log("warn", f"Cancelled: {path} - nothing was changed. Scheduled scans skip it until it changes; "
                                  "Run now (or Extract folder...) tries it again")
                 return "cancelled"
             if ok:
-                with self.cancel_file_lock:
-                    c = self._load_cancelled()
-                    if c.pop(path, None) is not None:
-                        self._save_cancelled(c)
+                self._forget(path)
                 bytes_in = 0
                 for f in self._archive_group(path):
                     try:
@@ -632,7 +691,18 @@ class Engine:
                     except OSError:
                         pass
                 was_nested = path in self.nested
-                if self._dispose_archive(path, root, cfg):
+                if out.get("skipped"):
+                    # files were left as they were, so the archive is the only full copy: keep it
+                    with self.lock:
+                        self.kept.update(self._archive_group(path))
+                    self.log("warn", f"Kept {out['skipped']} file(s) as they were because they already exist and "
+                                     f"overwriting is off. The archive was left in place so nothing is lost: {path}")
+                    disposed = True
+                elif self._dispose_archive(path, root, cfg):
+                    disposed = True
+                else:
+                    disposed = False
+                if disposed:
                     with self.lock:
                         self.status["extracted"] += 1
                         self.status["files_out"] += out["files"]
@@ -651,6 +721,10 @@ class Engine:
                 self.log("warn", f"Failed, will retry on its own after the rest of the folder: {path} - {err}")
                 return "retry"
             self._fail(path, err)
+            self._remember("failed", path)       # scheduled scans leave it alone until it changes
+            return "fail"
+        except Exception as e:  # noqa: BLE001 - one archive must never stop the others
+            self._fail(path, f"unexpected error: {e}")
             return "fail"
         finally:
             self._release_slot(slot)
@@ -763,13 +837,14 @@ class Engine:
     def _merge(self, stage, dest, cfg):
         """Move everything from the private folder into the archive's folder."""
         ow = cfg["overwrite"]
-        out = {"files": 0, "bytes": 0}
+        out = {"files": 0, "bytes": 0, "skipped": 0}
         with self.merge_lock:
             for cur, dirs, files in os.walk(stage):
                 rel = os.path.relpath(cur, stage)
                 tdir = dest if rel == "." else os.path.join(dest, rel)
                 if not os.path.isdir(tdir):
                     dirs[:] = []                           # parent clashed with a file: skipped
+                    out["skipped"] += sum(len(fs) for _, _, fs in os.walk(cur))
                     continue
                 for dn in dirs:
                     td = os.path.join(tdir, dn)
@@ -783,8 +858,10 @@ class Engine:
                     if os.path.lexists(dst):
                         if os.path.isdir(dst) and not os.path.islink(dst):
                             self.log("warn", f"Not replacing folder {dst} with a file of the same name")
+                            out["skipped"] += 1
                             continue
                         if not ow:
+                            out["skipped"] += 1
                             continue
                     try:
                         out["bytes"] += os.lstat(src).st_size

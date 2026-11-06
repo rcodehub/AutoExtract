@@ -1,4 +1,5 @@
 """End-to-end checks for the extraction engine. Run:  python3 -I tests/test_engine.py"""
+import json
 import os
 import shutil
 import stat
@@ -448,12 +449,144 @@ def test_cancel_one():
 
 
 
+def test_future_dated():
+    work, eng = fresh()
+    src = os.path.join(work, "src")
+    os.makedirs(src)
+    z = f"{src}/ahead.zip"
+    make_zip(z, {"a.txt": "a"})
+    ahead = time.time() + 365 * 86400
+    os.utime(z, (ahead, ahead))                              # dated a year ahead (clock / timezone mix-up)
+    s = run(eng, base_cfg(sources=[src], min_age_minutes=5))
+    check("future date: a brand-new arrival is still skipped (change time is now)", "ahead.zip" in tree(src) and s["deferred"] == 1, tree(src))
+    real = time.time
+    time.time = lambda: real() + 600                         # the archive "arrived" 10 minutes ago
+    try:
+        s = run(eng, base_cfg(sources=[src], min_age_minutes=5))
+    finally:
+        time.time = real
+    check("future date: extracted once it arrived long enough ago", "a.txt" in tree(src) and "ahead.zip" not in tree(src), tree(src))
+    msgs = " ".join(e["msg"] for e in eng.log_since(0, 1000))
+    check("future date: warned once", msgs.count("dated in the future") == 1, msgs[-300:])
+    shutil.rmtree(work)
+
+
+def test_overwrite_off_keeps_archive():
+    work, eng = fresh()
+    src = os.path.join(work, "src")
+    os.makedirs(src)
+    make_zip(f"{src}/x.zip", {"same.txt": "new", "other.txt": "o", "d/deep.txt": "d"})
+    open(f"{src}/same.txt", "w").write("mine")
+    s = run(eng, base_cfg(sources=[src], overwrite=False))
+    check("overwrite off: existing file untouched, rest extracted",
+          open(f"{src}/same.txt").read() == "mine" and "other.txt" in tree(src) and "d/deep.txt" in tree(src), tree(src))
+    check("overwrite off: archive kept, counted as extracted not failed",
+          "x.zip" in tree(src) and s["extracted"] == 1 and s["failed"] == 0 and s["remaining"] == 0, s)
+    msgs = " ".join(e["msg"] for e in eng.log_since(0, 1000))
+    check("overwrite off: warning names the count", "Kept 1 file(s)" in msgs, msgs[-300:])
+    for f in ("same.txt", "other.txt", "d/deep.txt"):
+        os.remove(f"{src}/{f}")                                # nothing clashes any more
+    run(eng, base_cfg(sources=[src], overwrite=False))
+    check("overwrite off: archive removed once nothing clashes", "x.zip" not in tree(src) and "same.txt" in tree(src), tree(src))
+    shutil.rmtree(work)
+
+
+def test_failed_remembered():
+    work, eng = fresh()
+    src = os.path.join(work, "src")
+    os.makedirs(src)
+    make_zip(f"{src}/good.zip", {"g.txt": "g"})
+    with open(f"{src}/bad.zip", "w") as f:
+        f.write("not a zip")
+    ff = os.path.join(work, "cfg", "failed-archives.json")
+    s = run(eng, base_cfg(sources=[src]), trigger="schedule")
+    check("failed: first scheduled run fails it and remembers it",
+          s["failed"] == 1 and s["skipped"] == 0 and f"{src}/bad.zip" in json.load(open(ff)), (s, os.path.exists(ff)))
+    s = run(eng, base_cfg(sources=[src]), trigger="schedule")
+    check("failed: next scheduled run skips it, counted as done", s["skipped"] == 1 and s["failed"] == 0
+          and s["remaining"] == 0 and s["found"] == 1 and s["done"] == 1, s)
+    check("failed: skip is in the history", eng.history[-1]["skipped"] == 1, eng.history[-1])
+    s = run(eng, base_cfg(sources=[src]), trigger="manual")
+    check("failed: manual run retries", s["failed"] == 1 and s["skipped"] == 0, s)
+    s = run(eng, base_cfg(sources=[src]), trigger="schedule")
+    check("failed: skipped again after the manual retry", s["skipped"] == 1, s)
+    make_zip(f"{src}/bad.zip", {"b.txt": "b"})              # fixed: signature changed
+    s = run(eng, base_cfg(sources=[src]), trigger="schedule")
+    check("failed: changed archive is retried, extracted, forgotten",
+          s["extracted"] == 1 and "b.txt" in tree(src) and json.load(open(ff)) == {}, (s, tree(src)))
+    # entries for vanished archives are dropped on save, cap applies
+    d = {f"/nope/{i}.zip": [1, 1] for i in range(6000)}
+    d[f"{src}/keep.zip"] = [1, 1]
+    open(f"{src}/keep.zip", "w").close()
+    eng._save_remembered(ff, d)
+    check("failed: vanished paths dropped when saving", json.load(open(ff)) == {f"{src}/keep.zip": [1, 1]})
+    shutil.rmtree(work)
+
+
+def test_cancelled_skip_counts_done():
+    work, eng = fresh()
+    src = os.path.join(work, "src")
+    os.makedirs(src)
+    make_zip(f"{src}/c.zip", {"c.txt": "c"})
+    open(os.path.join(work, "cfg", "cancelled-archives.json"), "w").write(json.dumps({f"{src}/c.zip": eng._signature(f"{src}/c.zip")}))
+    s = run(eng, base_cfg(sources=[src]), trigger="schedule")
+    check("cancelled skip: counted as skipped and done, remaining 0",
+          s["skipped"] == 1 and s["remaining"] == 0 and s["cancelled"] == 0 and "c.zip" in tree(src), s)
+    shutil.rmtree(work)
+
+
+def test_unexpected_error():
+    work, eng = fresh()
+    src = os.path.join(work, "src")
+    os.makedirs(src)
+    make_zip(f"{src}/boom.zip", {"x.txt": "x"})
+    make_zip(f"{src}/fine.zip", {"f.txt": "f"})
+    orig = eng._extract
+
+    def bad(path, *a, **k):
+        if path.endswith("boom.zip"):
+            raise ValueError("kaboom")
+        return orig(path, *a, **k)
+    eng._extract = bad
+    s = run(eng, base_cfg(sources=[src], threads=1))
+    msgs = " ".join(e["msg"] for e in eng.log_since(0, 1000))
+    check("unexpected error: only that archive fails, run completes",
+          s["result"] == "completed" and s["failed"] == 1 and s["extracted"] == 1 and "f.txt" in tree(src)
+          and "boom.zip" in tree(src) and "unexpected error: kaboom" in msgs, (s, msgs[-300:]))
+    check("unexpected error: slot released", all(x["path"] is None for x in eng.snapshot()["slots"]) or not eng.snapshot()["slots"])
+    shutil.rmtree(work)
+
+
+def test_dry_run_leaves_stages():
+    work, eng = fresh()
+    src = os.path.join(work, "src")
+    from engine import STAGE_PREFIX
+    stale = f"{src}/{STAGE_PREFIX}old"
+    os.makedirs(stale)
+    run(eng, base_cfg(sources=[src]), dry=True)
+    check("dry run: stale work folder not removed", os.path.isdir(stale))
+    run(eng, base_cfg(sources=[src]))
+    check("real run: stale work folder removed", not os.path.isdir(stale))
+    shutil.rmtree(work)
+
+
+def test_oneoff_root_refused():
+    work, eng = fresh()
+    assert eng.start(base_cfg(sources=[work]), "one-off", False, oneoff={"path": "/", "recursive": True})
+    eng.thread.join(30)
+    s = eng.snapshot()
+    check("one-off: / refused with a clear message", s["result"] == "error" and "root folder" in s["message"], s)
+    shutil.rmtree(work)
+
+
 if __name__ == "__main__":
     print("tools:", {k: bool(v) for k, v in Engine(tempfile.mkdtemp(), os.devnull).tools.items()})
     for fn in (test_settings, test_nested_delete_and_perms, test_move_mode, test_dry_run,
                test_min_age, test_excluded_and_stop, test_parallel_same_names, test_parts_spread_over_zips,
                test_broken_archive, test_volumes, test_nested_remembered_between_runs, test_stats,
-               test_recycle_bin, test_oneoff, test_cancel_one):
+               test_recycle_bin, test_oneoff, test_cancel_one, test_future_dated,
+               test_overwrite_off_keeps_archive, test_failed_remembered, test_cancelled_skip_counts_done,
+               test_unexpected_error, test_dry_run_leaves_stages, test_oneoff_root_refused):
         fn()
     print("\nALL PASSED" if not FAILS else f"\nFAILED: {FAILS}")
     sys.exit(1 if FAILS else 0)
