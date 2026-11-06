@@ -24,7 +24,7 @@ def check(name, cond, extra=""):
 
 
 def base_cfg(**kw):
-    cfg = dict(settings.DEFAULTS)
+    cfg = dict(settings.DEFAULTS, archive_mode="delete", junk_mode="delete")
     cfg.update(min_age_minutes=0, threads=3, set_perms=True)
     cfg.update(kw)
     clean, errors = settings.validate(cfg)
@@ -413,6 +413,26 @@ def test_oneoff():
 
 
 
+def test_keep_mode():
+    work, eng = fresh()
+    src = os.path.join(work, "src")
+    os.makedirs(f"{src}/k")
+    make_zip(f"{src}/k/kept.zip", {"kf.txt": "kept"})
+    cfg = base_cfg(sources=[src], archive_mode="keep", junk_mode="keep")
+    s = run(eng, cfg)
+    t = tree(src)
+    check("keep: file extracted and archive left in place", "k/kf.txt" in t and "k/kept.zip" in t, t)
+    extracts = [e["msg"] for e in eng.log_since(0, 1000) if "Extracting" in e["msg"] and "kept.zip" in e["msg"]]
+    check("keep: archive extracted once within the run", len(extracts) == 1, extracts)
+    s2 = run(eng, cfg)
+    extracts2 = [e["msg"] for e in eng.log_since(0, 1000) if "Extracting" in e["msg"] and "kept.zip" in e["msg"]]
+    check("keep: archive still present after a second separate run", "k/kept.zip" in tree(src), tree(src))
+    check("keep: files still exist after a second separate run", "k/kf.txt" in tree(src), tree(src))
+    print(f"INFO keep: extractions of kept.zip across two separate runs: {len(extracts2)} "
+          f"(second run result: {s2.get('result')})")
+    shutil.rmtree(work)
+
+
 def test_cancel_one():
     """Cancel one archive while another carries on: nothing changed, remembered for scheduled scans."""
     work, eng = fresh()
@@ -585,7 +605,7 @@ if __name__ == "__main__":
                test_min_age, test_excluded_and_stop, test_parallel_same_names, test_parts_spread_over_zips,
                test_broken_archive, test_volumes, test_nested_remembered_between_runs, test_stats,
                test_recycle_bin, test_oneoff, test_cancel_one, test_future_dated,
-               test_overwrite_off_keeps_archive, test_failed_remembered, test_cancelled_skip_counts_done,
+               test_overwrite_off_keeps_archive, test_keep_mode, test_failed_remembered, test_cancelled_skip_counts_done,
                test_unexpected_error, test_dry_run_leaves_stages, test_oneoff_root_refused):
         fn()
     print("\nALL PASSED" if not FAILS else f"\nFAILED: {FAILS}")
