@@ -5,6 +5,17 @@ Newest first. The latest entries are copied into the Unraid template (shown in C
 ### 2026-11-06
 - **Cancel** button for each archive being extracted: stops that archive only, throws its partly extracted files away and leaves the archive as it was, while the others carry on. Scheduled scans skip a cancelled archive until it changes; Run now or Extract folder… tries it again.
 - Folder pickers and **Extract folder…** only show folders mapped into the container (`/downloads`, `/trash`, `/mnt/user`, ...); container folders such as `/var` are hidden, and the app data folder too.
+- Files dated in the future (for example from a clock or timezone mix-up) no longer count as "too new" forever. The time they arrived on the server is used instead, and the log shows a warning.
+- With **Overwrite** off, an archive is now kept when any of its files were skipped because they already exist, so nothing is lost. The log says how many files were skipped.
+- New **Keep** action for archives and junk. It is the default on a fresh install when there is no trash folder and no reachable Recycle Bin; existing settings are unchanged.
+- Kept archives, and archives left in place because their files already existed, are remembered: scheduled scans and Run now no longer extract them again until the archive changes, the action is changed or Overwrite is turned on. **Extract folder…** still extracts them.
+- Archives that fail even when retried on their own are remembered too: scheduled scans skip them until they change, Run now tries them again. Status and History show a "skipped" count.
+- Archives skipped because they were cancelled earlier now count as done, so "remaining" reaches 0.
+- An unexpected error on one archive no longer stops the whole scan.
+- A dry run no longer deletes leftover work folders, and **Extract folder…** refuses `/`.
+- Settings: the "Where your folders are on the server" box updates as you type, including each source's Recycle Bin. Source and move folders must be inside a mapped folder and outside the app data folder, and invalid saved folders are reset when the settings load.
+- Folder picker fixes: a message when no folder is mapped, browsing from the top level works, and the move folder check refreshes after Browse.
+- Security: scripts using HTTP basic auth now count toward the failed-login lockout, malformed requests get a clear error instead of a server error, and statistics can no longer be corrupted when several saves happen at once.
 
 ### 2026-11-04
 - The Status page lists the folders whose archives are waiting because they changed too recently (may still be downloading), with the archive names and when they will be old enough to extract.
