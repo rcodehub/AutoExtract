@@ -57,29 +57,32 @@ app.config.update(SESSION_COOKIE_NAME="extract_archives_session", SESSION_COOKIE
 print(f"[auth] login required, user '{UI_USER}'" if AUTH_ON
       else "[auth] UI_PASSWORD not set - the web UI is open to anyone who can reach it", flush=True)
 
-_fails = {}   # ip -> timestamps of recent failed logins
+_fails = {}   # ip -> timestamps of recent failed logins (form and basic auth share this counter)
+_fails_lock = threading.Lock()      # waitress runs requests on several threads
 FAIL_WINDOW, FAIL_MAX = 300, 8      # 8 failures within 5 minutes lock that address out for the rest of the window
 _CTRL = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 
 
-def _prune(now):
-    """Forget addresses whose failures are all older than the window (the dict would otherwise grow forever)."""
-    for ip in [ip for ip, ts in _fails.items() if not any(now - t < FAIL_WINDOW for t in ts)]:
-        _fails.pop(ip, None)
+def _recent(ip, now):
+    """Failures from this address inside the window; forget every address that has none left. Hold _fails_lock."""
+    for k in [k for k, v in _fails.items() if not v or now - v[-1] >= FAIL_WINDOW]:
+        del _fails[k]
+    if ip in _fails:
+        _fails[ip] = [t for t in _fails[ip] if now - t < FAIL_WINDOW]
+    return len(_fails.get(ip, ()))
 
 
 def _locked(ip):
-    now = time.time()
-    _prune(now)
-    _fails[ip] = [t for t in _fails.get(ip, []) if now - t < FAIL_WINDOW]
-    if not _fails[ip]:
-        _fails.pop(ip, None)
-    return len(_fails.get(ip, ())) >= FAIL_MAX
+    with _fails_lock:
+        return _recent(ip, time.time()) >= FAIL_MAX
 
 
 def _failed(ip, user, how):
     """Count a failed login for this address and log it; control characters in the name can't forge log lines."""
-    _fails.setdefault(ip, []).append(time.time())
+    with _fails_lock:
+        now = time.time()
+        _recent(ip, now)
+        _fails.setdefault(ip, []).append(now)
     print(f"[auth] failed {how} for user '{_CTRL.sub('', user or '')[:40]}' from {ip}", flush=True)
 
 

@@ -46,6 +46,16 @@ class Stats:
             for k in TOTAL_KEYS:
                 if isinstance(d["totals"].get(k), bool) or not isinstance(d["totals"].get(k), (int, float)):
                     d["totals"][k] = 0
+            for key in ("types", "type_bytes", "days", "records"):   # non-object entries would break the counters later
+                d[key] = {k: v for k, v in d[key].items()
+                          if (isinstance(v, dict) if key in ("days", "records")
+                              else isinstance(v, (int, float)) and not isinstance(v, bool))}
+            for day in d["days"].values():
+                for dk in DAY_KEYS:
+                    if not isinstance(day.get(dk), (int, float)) or isinstance(day.get(dk), bool):
+                        day[dk] = 0
+            d["records"] = {k: v for k, v in d["records"].items()
+                            if isinstance(v.get("value"), (int, float)) and not isinstance(v.get("value"), bool)}
             return d
         except (OSError, ValueError, AttributeError, TypeError):
             return blank()
@@ -60,6 +70,7 @@ class Stats:
                 fd, tmp = tempfile.mkstemp(prefix="stats.", suffix=".tmp", dir=os.path.dirname(self.path) or ".")
                 with os.fdopen(fd, "w") as f:
                     f.write(snap)
+                os.chmod(tmp, 0o644)               # mkstemp makes it 0600; the share must stay readable over SMB
                 os.replace(tmp, self.path)
                 tmp = None
             except OSError:
