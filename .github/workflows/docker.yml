@@ -20,11 +20,8 @@ jobs:
           python-version: "3.12"
       - run: sudo add-apt-repository -y multiverse && sudo apt-get update && sudo apt-get install -y unzip zip unrar 7zip rar
       - run: pip install -r requirements.txt
-      - run: python3 -I tests/test_engine.py
-      - run: python3 -I tests/test_auth.py
-      - run: python3 -I tests/test_paths.py
-      - run: python3 -I tests/test_formats.py
-      - run: python3 -I tests/test_stats.py
+      - name: Run every test file
+        run: for t in tests/test_*.py; do echo "== $t"; python3 -I "$t" || exit 1; done
 
   publish:
     needs: test
