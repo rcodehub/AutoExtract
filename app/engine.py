@@ -546,11 +546,12 @@ class Engine:
             return set()
 
     def _snapshot_sets(self, d):
-        """Taken before a pass starts, so every archive of the pass sees the same neighbours (an archive
-        that is already extracted and removed must not make the next one look like it is alone)."""
+        """Taken before each pass over a folder and added up, so every archive of the folder sees the same
+        neighbours: one that was already extracted and removed (zips go before RARs) must not make the next
+        one look like it is alone."""
         sets = self._archive_sets(d)
         with self.lock:
-            self._dir_sets[d] = sets
+            self._dir_sets.setdefault(d, set()).update(sets)
 
     def _has_other_set(self, d, path):
         with self.lock:
@@ -588,6 +589,8 @@ class Engine:
         if not dry:
             self._remove_stale_stages(d)
         pending = []                     # failed once in parallel: retried alone at the end
+        with self.lock:
+            self._dir_sets.pop(d, None)
         for p in range(1, cfg["max_passes"] + 1):
             if self.stop_event.is_set():
                 return
@@ -639,6 +642,8 @@ class Engine:
                 break
         for a in pending:
             self._fail(a, "not retried: nesting pass limit reached")
+        with self.lock:
+            self._dir_sets.pop(d, None)
 
         if not dry and not self.stop_event.is_set():
             self._fix_perms(d, cfg)

@@ -313,6 +313,11 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
       </div>
       <div class="check"><input type="checkbox" id="overwrite"><div><label for="overwrite">Overwrite existing files</label>
         <div class="hint">When an extracted file already exists. Off = keep the existing file.</div></div></div>
+      <div class="field"><label for="folder_per_archive">Folder per archive</label>
+        <select id="folder_per_archive"><option value="smart">Smart</option><option value="always">Always</option><option value="never">Never</option></select>
+        <div class="hint"><b>Smart:</b> archives whose contents have no single top folder are extracted into a folder named after the archive, so several archives in one folder don't get mixed. An archive that already holds one folder, or sits alone in a folder named like it, is extracted as is.<br>
+          <b>Always:</b> every archive gets its own folder named after it (unless it already holds one folder with that name).<br>
+          <b>Never:</b> everything is extracted next to the archive.</div></div>
     </section>
 
     <section class="card">
@@ -807,7 +812,7 @@ async function loadSettings() {
   for (const p of s.sources) src.append(sourceRow(p, d.sources_info[p]));
   if (!s.sources.length) src.append(sourceRow(""));
   for (const k of ["schedule_enabled", "run_on_start", "overwrite", "set_perms", "chown_enabled"]) $(k).checked = s[k];
-  for (const k of ["interval_minutes", "min_age_minutes", "max_passes", "file_mode", "dir_mode", "uid", "gid", "archive_mode", "junk_mode", "move_dir"]) $(k).value = s[k];
+  for (const k of ["interval_minutes", "min_age_minutes", "max_passes", "file_mode", "dir_mode", "uid", "gid", "archive_mode", "junk_mode", "move_dir", "folder_per_archive"]) $(k).value = s[k];
   $("threads_in").value = s.threads;
   $("junk_patterns").value = s.junk_patterns.join("\n");
   $("exclude_dirs").value = s.exclude_dirs.join("\n");
@@ -869,7 +874,7 @@ function collect() {
     schedule_enabled: $("schedule_enabled").checked, run_on_start: $("run_on_start").checked,
     interval_minutes: num("interval_minutes"), threads: num("threads_in"),
     min_age_minutes: num("min_age_minutes"), max_passes: num("max_passes"),
-    overwrite: $("overwrite").checked,
+    overwrite: $("overwrite").checked, folder_per_archive: $("folder_per_archive").value,
     archive_mode: $("archive_mode").value, junk_mode: $("junk_mode").value, move_dir: $("move_dir").value.trim(),
     junk_patterns: $("junk_patterns").value, exclude_dirs: $("exclude_dirs").value,
     set_perms: $("set_perms").checked, file_mode: $("file_mode").value.trim(), dir_mode: $("dir_mode").value.trim(),
