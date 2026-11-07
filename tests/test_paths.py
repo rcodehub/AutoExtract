@@ -278,10 +278,10 @@ pick = os.path.join(dl, "pick")
 os.makedirs(pick)
 import zipfile
 with zipfile.ZipFile(os.path.join(pick, "x.zip"), "w") as z:
-    z.writestr("x.txt", "x")
+    z.writestr("x/x.txt", "x")            # one top folder: extracted as is (the default Smart setting)
 r = c.post("/api/run-folder", json={"path": pick, "action": "keep", "recursive": False})
 main.engine.thread.join(20)
-check("one-off: runs and keeps the archive", r.status_code == 200 and os.path.isfile(os.path.join(pick, "x.txt"))
+check("one-off: runs and keeps the archive", r.status_code == 200 and os.path.isfile(os.path.join(pick, "x", "x.txt"))
       and os.path.isfile(os.path.join(pick, "x.zip")) and main.engine.history[-1]["trigger"] == "one-off", r.get_json())
 
 # --- folder picker: only mapped folders, never container folders

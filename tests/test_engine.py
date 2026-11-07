@@ -24,7 +24,9 @@ def check(name, cond, extra=""):
 
 
 def base_cfg(**kw):
-    cfg = dict(settings.DEFAULTS, archive_mode="delete", junk_mode="delete")
+    # these tests are about scanning, ages, overwrite, recycle, cancel ...: results land next to the archive, as before.
+    # Folder-per-archive behaviour is covered in tests/test_folders.py
+    cfg = dict(settings.DEFAULTS, archive_mode="delete", junk_mode="delete", folder_per_archive="never")
     cfg.update(min_age_minutes=0, threads=3, set_perms=True)
     cfg.update(kw)
     clean, errors = settings.validate(cfg)

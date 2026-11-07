@@ -38,7 +38,9 @@ def check(name, cond, extra=""):
 
 def base_cfg(**kw):
     cfg = dict(settings.DEFAULTS)
-    cfg.update(min_age_minutes=0, threads=4, set_perms=True, archive_mode="delete", junk_mode="delete")
+    # this test is about the archive formats: the results are checked next to the archive (see test_folders.py for the folders)
+    cfg.update(min_age_minutes=0, threads=4, set_perms=True, archive_mode="delete", junk_mode="delete",
+               folder_per_archive="never")
     cfg.update(kw)
     clean, errors = settings.validate(cfg)
     assert not errors, errors

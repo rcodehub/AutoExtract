@@ -21,6 +21,7 @@ DEFAULTS = {
     "overwrite": True,                # overwrite existing files when extracting
     "archive_mode": "keep",           # after a successful extract: recycle (share's .Recycle.Bin) | delete | move | keep
     "junk_mode": "keep",              # junk files: recycle | delete | move | keep (leave in place)
+    "folder_per_archive": "smart",    # smart | always | never: extract loose contents into a folder named after the archive
     "move_dir": "",                   # where "move" puts things
     "junk_patterns": ["*.diz"],       # file name patterns (case-insensitive)
     "exclude_dirs": ["@eaDir", ".Recycle.Bin", "#recycle", ".Trash*"],
@@ -36,6 +37,7 @@ _lock = threading.Lock()
 
 
 MODES = ("recycle", "delete", "move", "keep")
+FOLDER_MODES = ("smart", "always", "never")
 
 
 def env_defaults():
@@ -133,6 +135,12 @@ def _validate(data, mapped=True):
             errors.append(f"{label} must be recycle, delete, move or keep")
         else:
             s[k] = v
+
+    v = str(data.get("folder_per_archive", s["folder_per_archive"])).strip().lower()
+    if v not in FOLDER_MODES:
+        err("folder_per_archive", "Folder per archive must be smart, always or never")
+    else:
+        s["folder_per_archive"] = v
 
     s["junk_patterns"] = _lines(data.get("junk_patterns", s["junk_patterns"]))
     s["exclude_dirs"] = _lines(data.get("exclude_dirs", s["exclude_dirs"]))

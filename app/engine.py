@@ -5,6 +5,7 @@ extracts every archive in it (into the same directory), removes/moves the
 archive and any junk files, rescans the same directory for nested archives,
 and only then descends into the sub-directories.
 """
+import difflib
 import fnmatch
 import logging
 import logging.handlers
@@ -32,6 +33,46 @@ NUMVOL_RE = re.compile(r"^(.*\.(?:7z|zip))\.(\d{3})$", re.I)   # name.7z.001, na
 STAGE_PREFIX = ".autoextract-"     # private per-archive extraction folders
 FIRST_PART_RE = re.compile(r"^(.*)\.part0*1\.rar$", re.I)
 RAR_RE = re.compile(r"^(.*)\.rar$", re.I)
+
+
+ARCHIVE_EXT_RE = re.compile(r"\.(?:tar\.gz|tar\.bz2|tar\.xz|tgz|tbz2|txz|tar|7z|zip|rar)$", re.I)
+OLD_VOL_RE = re.compile(r"\.(?:r\d\d|z\d\d+)$", re.I)          # name.r00, name.z01
+SIMILAR_RATIO = 0.85
+
+
+def archive_base_name(filename):
+    """Name of an archive without its extension and volume part: name.part01.rar, name.zip.001, name.tar.gz,
+    name.r00 ... -> name. Trailing dots and spaces are trimmed; an empty result becomes <file name>_files."""
+    base = os.path.basename(filename)
+    name = base
+    m = PART_RE.search(name)
+    if m:
+        name = name[:m.start()]
+    else:
+        m = NUMVOL_RE.match(name)
+        if m:
+            name = m.group(1)
+        name = ARCHIVE_EXT_RE.sub("", name, count=1)
+        if name == base:                                   # not an archive extension: maybe name.r00 / name.z01
+            name = OLD_VOL_RE.sub("", name, count=1)
+    name = name.rstrip(". ")
+    return name or (base + "_files")
+
+
+def _norm_name(s):
+    return re.sub(r"[.\s_\-]+", " ", s.lower()).strip()
+
+
+def names_similar(a, b):
+    """True when two names (a folder name and an archive name without its extension) are about the same thing:
+    equal, or one starts with the other at a separator boundary, or at least 85% alike. '.', '_', '-' and
+    spaces count as one separator and case is ignored."""
+    a, b = _norm_name(a), _norm_name(b)
+    if not a or not b:
+        return False
+    if a == b or a.startswith(b + " ") or b.startswith(a + " "):
+        return True
+    return difflib.SequenceMatcher(None, a, b).ratio() >= SIMILAR_RATIO
 
 
 def which_tools():
@@ -148,6 +189,7 @@ class Engine:
         self._slot_procs = {}        # slot -> running extractor processes (so one archive can be cancelled alone)
         self._skip_logged = set()
         self._slots = []
+        self._dir_sets = {}          # folder -> archive sets found in it at the start of the current pass
 
     # ------------------------------------------------------------ logging
     def log(self, level, msg):
@@ -270,6 +312,7 @@ class Engine:
             self.cancelled_paths = set()
             self._slot_procs = {}
             self._skip_logged = set()
+            self._dir_sets = {}
             self._slots = [None] * cfg["threads"]
             self.thread.start()
             return True
@@ -352,6 +395,7 @@ class Engine:
             elif cfg["archive_mode"] == "move" or cfg["junk_mode"] == "move":
                 raise RuntimeError("'Move' is selected but no move folder is set")
 
+            cfg["_roots"] = set(sources)           # a source root is never treated as a release folder
             for s in sources:
                 self._prescan(s, cfg)
             self.log("info", f"Found {len(self.seen)} archive(s) to start with"
@@ -493,6 +537,45 @@ class Engine:
                 out.append(e.path)
         return out
 
+    def _archive_sets(self, d):
+        """The archive sets (first volumes) in a folder, listed once."""
+        try:
+            return {e.path for e in os.scandir(d)
+                    if is_archive(e.name) and not is_secondary_volume(e.name) and e.is_file(follow_symlinks=False)}
+        except OSError:
+            return set()
+
+    def _snapshot_sets(self, d):
+        """Taken before a pass starts, so every archive of the pass sees the same neighbours (an archive
+        that is already extracted and removed must not make the next one look like it is alone)."""
+        sets = self._archive_sets(d)
+        with self.lock:
+            self._dir_sets[d] = sets
+
+    def _has_other_set(self, d, path):
+        with self.lock:
+            sets = self._dir_sets.get(d)
+        if sets is None:
+            sets = self._archive_sets(d)
+        return any(p != path for p in sets)
+
+    def _is_release_folder(self, path, cfg):
+        """The archive sits in a folder named like it, alone (other files are fine), and that folder is not
+        a scanned root."""
+        d = os.path.dirname(path)
+        if d in cfg.get("_roots", ()):
+            return False
+        return names_similar(os.path.basename(d), archive_base_name(path)) and not self._has_other_set(d, path)
+
+    def _dry_target_text(self, path, d, cfg):
+        mode = cfg.get("folder_per_archive", "smart")
+        if mode == "never":
+            return "into this folder"
+        name = archive_base_name(path)
+        if mode == "smart" and self._is_release_folder(path, cfg):
+            return "into this folder (it is the archive's own folder)"
+        return f"into a folder named after the archive ({name}/) unless it holds a single folder"
+
     # ------------------------------------------------------------ one directory
     def _process_dir(self, d, root, cfg, pool):
         if self.stop_event.is_set():
@@ -511,6 +594,7 @@ class Engine:
             with self.lock:
                 self.status["pass"] = p
             todo = []
+            self._snapshot_sets(d)
             sched = cfg.get("_trigger") == "schedule"
             for a in self._list_archives(d, cfg):
                 self._register(a)        # picks up nested archives that just appeared
@@ -530,7 +614,8 @@ class Engine:
             did = 0
             if dry:
                 for a in todo:
-                    self.log("info", f"[dry run] would extract, then {self._act_text(cfg['archive_mode'], cfg)}: {a}")
+                    self.log("info", f"[dry run] would extract {self._dry_target_text(a, d, cfg)}, "
+                                     f"then {self._act_text(cfg['archive_mode'], cfg)}: {a}")
             elif todo:
                 # zip/7z/tar first: they often contain the parts of a RAR set
                 batch = [a for a in todo if not a.lower().endswith(".rar")] or todo
@@ -860,7 +945,7 @@ class Engine:
                             if self._slots[slot].get("cancel"):
                                 return False, "stopped", None
                             self._slots[slot]["phase"] = "finishing"
-                    out = self._merge(stage, dest, cfg)
+                    out = self._merge(stage, dest, cfg, path)
                     if errors:
                         self.log("info", f"Extracted with {tool} after: {' | '.join(errors)}")
                     return True, "", out
@@ -874,11 +959,54 @@ class Engine:
                 shutil.rmtree(stage, ignore_errors=True)
         return False, " | then ".join(errors), None
 
-    def _merge(self, stage, dest, cfg):
-        """Move everything from the private folder into the archive's folder."""
+    def _choose_target(self, stage, dest, cfg, path):
+        """Where the extracted files go: dest itself, or dest/<archive name>/ (see the folder_per_archive
+        setting). Returns (folder, why); why is "" when nothing is wrapped."""
+        mode = cfg.get("folder_per_archive", "smart")
+        if mode == "never" or path is None:
+            return dest, ""
+        try:
+            top = [(e.name, e.is_dir(follow_symlinks=False)) for e in os.scandir(stage)]
+        except OSError:
+            return dest, ""
+        if not top:
+            return dest, ""                                    # an empty archive extracts nothing
+        name = archive_base_name(path)
+        one_folder = len(top) == 1 and top[0][1]
+        if mode == "always":
+            if one_folder and names_similar(top[0][0], name):
+                return dest, ""                                # avoid name/name
+            why = "folder per archive is set to Always"
+        else:
+            if self._is_release_folder(path, cfg):
+                return dest, ""
+            if one_folder:
+                return dest, ""
+            why = "the archive has no single top folder"
+        target = os.path.join(dest, name)
+        n = 0
+        while os.path.lexists(target) and (os.path.islink(target) or not os.path.isdir(target)):
+            n += 1
+            target = os.path.join(dest, f"{name} ({n})")
+        if n:
+            why += f"; a file named {name} is in the way"
+        return target, why
+
+    def _merge(self, stage, dest, cfg, path=None):
+        """Move everything from the private folder into the archive's folder (or into a new folder named
+        after the archive, when path is given and the setting says so)."""
         ow = cfg["overwrite"]
         out = {"files": 0, "bytes": 0, "skipped": 0}
         with self.merge_lock:
+            dest, why = self._choose_target(stage, dest, cfg, path)
+            if why:
+                rel = os.path.basename(dest)
+                if os.path.isdir(dest):
+                    self.log("info", f"Extracted into the existing folder {rel}/ ({why})")
+                else:
+                    os.makedirs(dest)
+                    self._apply_perm(dest, True, cfg)
+                    self.log("info", f"Extracted into a new folder {rel}/ ({why})")
             for cur, dirs, files in os.walk(stage):
                 rel = os.path.relpath(cur, stage)
                 tdir = dest if rel == "." else os.path.join(dest, rel)
