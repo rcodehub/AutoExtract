@@ -2,6 +2,9 @@
 
 Newest first. The latest entries are copied into the Unraid template (shown in Community Applications) each time an image is published.
 
+### 2026-11-07
+- New setting **Folder per archive** (default **Smart**). An archive whose contents have no single top folder is now extracted into a folder named after the archive, so ten archives of loose files in one folder no longer end up mixed together. An archive that already holds one folder, or sits alone in a folder named like it (a release folder), is extracted as before. Choose **Always** or **Never** to force either way. Existing installs get Smart; it also applies to nested archives and **Extract folder…**.
+
 ### 2026-11-06
 - **Cancel** button for each archive being extracted: stops that archive only, throws its partly extracted files away and leaves the archive as it was, while the others carry on. Scheduled scans skip a cancelled archive until it changes; Run now or Extract folder… tries it again.
 - Folder pickers and **Extract folder…** only show folders mapped into the container (`/downloads`, `/trash`, `/mnt/user`, ...); container folders such as `/var` are hidden, and the app data folder too.

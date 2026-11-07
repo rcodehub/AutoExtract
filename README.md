@@ -60,6 +60,7 @@ Only change the *Host Path* side of the paths. On first start `/downloads` is se
 | Skip archives newer than | 5 min | Leaves archives that changed recently for a later scan, so downloads still in progress aren't touched. Archives that came out of other archives are never skipped. 0 = off |
 | Max nested levels | 25 | Safety limit for archives inside archives |
 | Overwrite existing files | on | Off keeps existing files |
+| Folder per archive | Smart | **Smart:** an archive whose contents have no single top folder is extracted into a folder named after the archive (`name.part1.rar`, `name.tar.gz` → `name/`), so archives of loose files in one folder don't get mixed. An archive that holds one folder, or sits alone in a folder named like it, is extracted as is (a scanned source folder itself never counts). **Always:** every archive gets its own folder (unless it holds one folder with that name). **Never:** extract next to the archive |
 | Archives that extracted fine | Recycle Bin* | Move to the share's Recycle Bin, delete, or move to the move folder |
 | Junk files | Recycle Bin* | Same choices |
 | Move folder | `/trash` if mapped | Keeps the folder layout: `<move folder>/<source name>/<path>`; name clashes get `.1`, `.2` |
