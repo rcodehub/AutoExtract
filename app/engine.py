@@ -38,6 +38,7 @@ RAR_RE = re.compile(r"^(.*)\.rar$", re.I)
 ARCHIVE_EXT_RE = re.compile(r"\.(?:tar\.gz|tar\.bz2|tar\.xz|tgz|tbz2|txz|tar|7z|zip|rar)$", re.I)
 OLD_VOL_RE = re.compile(r"\.(?:r\d\d|z\d\d+)$", re.I)          # name.r00, name.z01
 SIMILAR_RATIO = 0.85
+MAX_NAME_BYTES = 247                   # 255 minus room for " (99999)"
 
 
 def archive_base_name(filename):
@@ -190,6 +191,8 @@ class Engine:
         self._skip_logged = set()
         self._slots = []
         self._dir_sets = {}          # folder -> archive sets found in it at the start of the current pass
+        self._made = {}              # wrapper folder created in this run -> the archive set that created it
+        self._parents = {}           # nested archive path -> the archive set it came out of (this run)
 
     # ------------------------------------------------------------ logging
     def log(self, level, msg):
@@ -313,6 +316,8 @@ class Engine:
             self._slot_procs = {}
             self._skip_logged = set()
             self._dir_sets = {}
+            self._made = {}
+            self._parents = {}
             self._slots = [None] * cfg["threads"]
             self.thread.start()
             return True
@@ -553,12 +558,23 @@ class Engine:
         with self.lock:
             self._dir_sets.setdefault(d, set()).update(sets)
 
+    def _ancestors(self, path):
+        """The archive set(s) this one came out of, recursively (zip holding the RAR volumes ...)."""
+        out = set()
+        with self.lock:
+            p = self._parents.get(path)
+            while p and p not in out and p != path:
+                out.add(p)
+                p = self._parents.get(p)
+        return out
+
     def _has_other_set(self, d, path):
         with self.lock:
             sets = self._dir_sets.get(d)
         if sets is None:
             sets = self._archive_sets(d)
-        return any(p != path for p in sets)
+        skip = self._ancestors(path) | {path}      # the archive it came out of is not a neighbour
+        return any(p not in skip for p in sets)
 
     def _is_release_folder(self, path, cfg):
         """The archive sits in a folder named like it, alone (other files are fine), and that folder is not
@@ -988,14 +1004,46 @@ class Engine:
             if one_folder:
                 return dest, ""
             why = "the archive has no single top folder"
-        target = os.path.join(dest, name)
+        name = self._wrapper_base(name, cfg)
         n = 0
-        while os.path.lexists(target) and (os.path.islink(target) or not os.path.isdir(target)):
+        last = ""
+        target = os.path.join(dest, name)
+        while True:
+            base = os.path.basename(target)
+            if os.path.lexists(target) and (os.path.islink(target) or not os.path.isdir(target)):
+                last = f"a file named {base} is in the way"
+            elif os.path.isdir(target) and self._made.get(target, path) != path:
+                last = f"{base} was created in this run for another archive"
+            elif n and self._excluded(base, cfg):
+                last = f"{base} would be skipped by the folder exclusions"
+            else:
+                break
             n += 1
             target = os.path.join(dest, f"{name} ({n})")
         if n:
-            why += f"; a file named {name} is in the way"
+            why += f"; using {os.path.basename(target)}/ because {last}"
         return target, why
+
+    def _wrapper_base(self, name, cfg):
+        """Folder name for an archive: short enough for ' (n)' to fit in 255 bytes, and never one the scan
+        skips (@eaDir, .Trash*, a user exclude pattern), or nested archives inside it would be ignored."""
+        def cut(s, limit):
+            b = os.fsencode(s)
+            if len(b) <= limit:
+                return s
+            k = limit
+            while k > 0 and (b[k] & 0xC0) == 0x80:         # do not split a UTF-8 character
+                k -= 1
+            return os.fsdecode(b[:k]).rstrip(". ") or "archive"
+        plain = cut(name, MAX_NAME_BYTES)
+        if not self._excluded(plain, cfg):
+            return plain
+        # <name>_files; a wildcard pattern (.Trash*, skipme*) can still match that, so then put the word first
+        for pre, suf in (("", "_files"), ("files_", ""), ("extracted_", "")):
+            cand = pre + cut(name, MAX_NAME_BYTES - len(pre) - len(suf)) + suf
+            if not self._excluded(cand, cfg):
+                return cand
+        return "archive_files"
 
     def _merge(self, stage, dest, cfg, path=None):
         """Move everything from the private folder into the archive's folder (or into a new folder named
@@ -1011,6 +1059,7 @@ class Engine:
                 else:
                     os.makedirs(dest)
                     self._apply_perm(dest, True, cfg)
+                    self._made[dest] = path
                     self.log("info", f"Extracted into a new folder {rel}/ ({why})")
             for cur, dirs, files in os.walk(stage):
                 rel = os.path.relpath(cur, stage)
@@ -1045,6 +1094,8 @@ class Engine:
                     if is_archive(fn):
                         with self.lock:
                             self.nested.add(dst)           # came out of an archive: complete, not a download
+                            if path is not None:
+                                self._parents[dst] = path
         return out
 
     def _remove_stale_stages(self, d):

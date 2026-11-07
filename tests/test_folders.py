@@ -356,6 +356,111 @@ def test_other_formats():
     shutil.rmtree(work)
 
 
+def mk_other(kind, out, files):
+    """A 7z or RAR archive holding the given loose files (name -> text)."""
+    tmp = tempfile.mkdtemp(prefix="ea-mk-")
+    try:
+        for n, v in files.items():
+            open(os.path.join(tmp, n), "w").write(v)
+        cmd = (["7z", "a", "-bd", "-y", out] if kind == "7z" else ["rar", "a", "-idq", "-y", "-ep", "-ma5", out])
+        r = subprocess.run(cmd + list(files), cwd=tmp, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, text=True)
+        assert r.returncode == 0, r.stdout
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_same_base_name():
+    work, src, eng = fresh()
+    mkzip(f"{src}/name.zip", {"readme.txt": "FROM ZIP", "z.txt": "z"})
+    mk_other("7z", f"{src}/name.7z", {"readme.txt": "FROM 7Z", "s.txt": "s"})
+    mk_other("rar", f"{src}/name.rar", {"readme.txt": "FROM RAR", "r.txt": "r"})
+    s = run(eng, cfg_for(sources=[src], archive_mode="keep", overwrite=True))
+    dirs = sorted(e for e in os.listdir(src) if os.path.isdir(f"{src}/{e}"))
+    texts = sorted(open(f"{src}/{d}/readme.txt").read() for d in dirs if os.path.exists(f"{src}/{d}/readme.txt"))
+    check("same base name: name/, name (1)/, name (2)/", dirs == ["name", "name (1)", "name (2)"], dirs)
+    check("same base name: each folder has its own readme.txt intact",
+          texts == ["FROM 7Z", "FROM RAR", "FROM ZIP"] and s["extracted"] == 3, (texts, s))
+    check("same base name: each folder holds exactly its own two files",
+          all(len(os.listdir(f"{src}/{d}")) == 2 for d in dirs), [os.listdir(f"{src}/{d}") for d in dirs])
+    check("same base name: the log says which name was used and why",
+          any("name (1)/" in m and "created in this run for another archive" in m for m in logs(eng)), logs(eng))
+    shutil.rmtree(work)
+
+    # a folder that existed before the run is still merged into (Overwrite applies); a later run reuses it
+    work, src, eng = fresh()
+    os.makedirs(f"{src}/name")
+    open(f"{src}/name/old.txt", "w").write("old")
+    mkzip(f"{src}/name.zip", {"a.txt": "a", "b.txt": "b"})
+    run(eng, cfg_for(sources=[src], archive_mode="keep"))
+    t = tree(src)
+    check("same base name: a folder from before the run is merged into", {"name/old.txt", "name/a.txt"} <= set(t)
+          and not os.path.exists(f"{src}/name (1)"), t)
+    cfg = cfg_for(sources=[src], archive_mode="keep")
+    run(eng, cfg, trigger="one-off", oneoff={"path": src, "recursive": False})
+    check("same base name: the same archive extracted again reuses its folder", not os.path.exists(f"{src}/name (1)"),
+          os.listdir(src))
+    shutil.rmtree(work)
+
+
+def test_release_zip_with_rar_parts():
+    for mode in ("keep", "delete"):
+        work, src, eng = fresh()
+        d = f"{src}/Movie.2016-GRP"
+        inner = os.path.join(work, "inner")
+        mkrar_set(inner, "movie.2016-grp")
+        open(f"{inner}/movie.2016-grp.nfo", "w").write("nfo")
+        files = {n: ("file", f"{inner}/{n}") for n in os.listdir(inner)}
+        mkzip(f"{d}/movie.2016-grp.zip", files)
+        s = run(eng, cfg_for(sources=[src], archive_mode=mode))
+        t = tree(src)
+        check(f"release zip holding RAR parts ({mode}): payload directly in the release folder",
+              "Movie.2016-GRP/payload.bin" in t and not any("/movie.2016-grp/" in x for x in t), t)
+        check(f"release zip holding RAR parts ({mode}): both archives extracted", s["extracted"] == 2 and s["failed"] == 0, s)
+        shutil.rmtree(work)
+    work, src, eng = fresh()                       # a really unrelated RAR set next to the zip is still a neighbour
+    d = f"{src}/Movie.2016"
+    mkzip(f"{d}/extras.zip", {"x.txt": "x"})
+    mkrar_set(d, "movie.2016")
+    run(eng, cfg_for(sources=[src]))
+    t = tree(src)
+    check("release folder: a zip extracted first still counts as a neighbour of an unrelated RAR set",
+          "Movie.2016/movie.2016/payload.bin" in t and "Movie.2016/extras/x.txt" in t, t)
+    shutil.rmtree(work)
+
+
+def test_long_names():
+    work, src, eng = fresh()
+    base = "\u00e9" * 125                           # 250 bytes in UTF-8
+    mkzip(f"{src}/{base}.zip", {"readme.txt": "ZIP", "z.txt": "z"})
+    mk_other("7z", f"{src}/{base}.7z", {"readme.txt": "7Z", "s.txt": "s"})
+    mk_other("rar", f"{src}/{base}.rar", {"readme.txt": "RAR", "r.txt": "r"})
+    s = run(eng, cfg_for(sources=[src], archive_mode="keep"))
+    dirs = sorted(e for e in os.listdir(src) if os.path.isdir(f"{src}/{e}"))
+    check("long name: three folders, every name fits in 255 bytes",
+          len(dirs) == 3 and all(len(os.fsencode(x)) <= 255 for x in dirs) and s["failed"] == 0 and s["extracted"] == 3,
+          ([len(os.fsencode(x)) for x in dirs], s))
+    check("long name: cut at a character boundary", all(x.encode("utf-8", "strict") and x.startswith("\u00e9")
+          for x in dirs) and "(1)" in "".join(dirs) and "(2)" in "".join(dirs), dirs)
+    check("long name: contents intact", sorted(open(f"{src}/{d}/readme.txt").read() for d in dirs) == ["7Z", "RAR", "ZIP"])
+    shutil.rmtree(work)
+
+
+def test_excluded_names():
+    work, src, eng = fresh()
+    inner = os.path.join(work, "inner.zip")
+    mkzip(inner, {"deep.txt": "d", "deep2.txt": "d"})
+    for n in ("@eaDir", ".Trash-1000", ".Recycle.Bin", "skipme"):
+        mkzip(f"{src}/{n}.zip", {"a.txt": "a", "b.txt": "b", "inner.zip": ("file", inner)})
+    s = run(eng, cfg_for(sources=[src], exclude_dirs=["skipme*", "@eaDir", ".Recycle.Bin", ".Trash*"]))
+    t = tree(src)
+    names = {"@eaDir": "@eaDir_files", ".Trash-1000": "files_.Trash-1000", ".Recycle.Bin": ".Recycle.Bin_files",
+             "skipme": "files_skipme"}         # <name>_files, or files_<name> when a wildcard still matches that
+    check("excluded name: scannable wrapper (<name>_files) and nested archives inside are extracted",
+          all(f"{w}/a.txt" in t and f"{w}/inner/deep.txt" in t for w in names.values()) and s["failed"] == 0, t)
+    shutil.rmtree(work)
+
+
 def test_oneoff():
     work, src, eng = fresh()
     pick = os.path.join(work, "pick")
@@ -403,7 +508,8 @@ def test_empty_and_root():
 def main():
     for fn in (test_names, test_settings, test_smart_basic, test_ten_zips, test_release_folder,
                test_release_inconsistency, test_root_is_never_a_release_folder, test_existing_folder_and_files,
-               test_nested, test_modes, test_other_formats, test_oneoff, test_dry_run, test_empty_and_root):
+               test_nested, test_same_base_name, test_release_zip_with_rar_parts, test_long_names,
+               test_excluded_names, test_modes, test_other_formats, test_oneoff, test_dry_run, test_empty_and_root):
         fn()
     shutil.rmtree(CFG_DIR, ignore_errors=True)
     print("\nALL PASSED" if not FAILS else f"\nFAILED: {FAILS}")
