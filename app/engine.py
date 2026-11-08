@@ -200,6 +200,7 @@ class Engine:
         self._slots = []
         self._dir_sets = {}          # folder -> archive sets found in it at the start of the current pass
         self._made = {}              # wrapper folder created in this run -> the archive set that created it
+        self._held = set()           # archive sets waiting for pieces still inside too-new archives
         self._parents = {}           # nested archive path -> the archive set it came out of (this run)
 
     # ------------------------------------------------------------ logging
@@ -326,6 +327,7 @@ class Engine:
             self._dir_sets = {}
             self._made = {}
             self._parents = {}
+            self._held = set()
             self._slots = [None] * cfg["threads"]
             self.thread.start()
             return True
@@ -588,6 +590,48 @@ class Engine:
             skip |= self._ancestors(f)
         return any(p not in skip for p in sets)
 
+    def _volume_gaps(self, path):
+        """True when the volume numbering of the set shows a missing piece (part1, part2, part4 ...)."""
+        base = os.path.basename(path)
+        nums = []
+        for f in self._archive_group(path):
+            n = os.path.basename(f)
+            m = PART_RE.search(n) or NUMVOL_RE.match(n)
+            if m:
+                nums.append(int(m.group(1) if m.re is PART_RE else m.group(2)))
+                continue
+            m = re.search(r"\.r(\d\d)$", n, re.I)
+            if m:
+                nums.append(int(m.group(1)) + 1)       # name.rar is volume 1, name.r00 volume 2 ...
+        if not nums:
+            return False
+        if RAR_RE.match(base) and not FIRST_PART_RE.match(base):
+            nums.append(1)
+        return set(nums) != set(range(1, max(nums) + 1))
+
+    def _hold_for_pieces(self, d, a):
+        """True when the archive set must wait: some archive in this folder is still too new (maybe still
+        downloading) and this set has pieces that came out of an archive in this run, or its numbering has
+        a gap - so a piece may still be inside one of the too-new archives."""
+        with self.lock:
+            waiting = [p for p in self.deferred if os.path.dirname(p) == d and p not in self._held]
+            if not waiting:
+                return False
+            group = self._archive_group(a)
+            came_out = any(f in self._parents for f in group)
+        if not (came_out or self._volume_gaps(a)):
+            return False
+        with self.lock:
+            ready = max((self.deferred_ready.get(p, 0) for p in waiting), default=0)
+            new = a not in self._held
+            self.deferred.add(a)
+            self.deferred_ready[a] = ready
+            self._held.add(a)
+        if new:
+            self.log("info", f"Waiting: {os.path.basename(a)} - some of its pieces are still in archives that "
+                             "are too new")
+        return True
+
     def _is_release_folder(self, path, cfg):
         """The archive sits in a folder named like it, alone (other files are fine), and that folder is not
         a scanned root."""
@@ -628,6 +672,8 @@ class Engine:
             self._snapshot_sets(d)
             sched = cfg.get("_trigger") == "schedule"
             for a in self._list_archives(d, cfg):
+                if not dry and self._hold_for_pieces(d, a):
+                    continue
                 self._register(a)        # picks up nested archives that just appeared
                 if a in self.failed_paths or a in pending or a in self.kept or a in self.cancelled_paths:
                     continue

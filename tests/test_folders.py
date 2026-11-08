@@ -753,6 +753,47 @@ def test_volume_archives_duplicate_piece():
         shutil.rmtree(work)
 
 
+def test_volume_archives_wait_for_downloads():
+    work, src, eng = fresh()
+    tmp = os.path.join(work, "pieces")
+    names, data = make_pieces(tmp, "rel")
+    zips = zips_of_pieces(work, src, src, "release", tmp, names, {"file_id.diz": "d"})
+    old = time.time() - 3600
+    for z in zips:
+        os.utime(z, (old, old))
+    for z in zips[3:]:                                # the last two are still "downloading"
+        os.utime(z, None)
+    cfg = cfg_for(sources=[src], min_age_minutes=5)
+    s = run(eng, cfg)
+    t = tree(src)
+    check("waiting: old zips extracted in place, pieces gathered",
+          all(n in t for n in names[:3]) and not [x for x in os.listdir(src) if os.path.isdir(f"{src}/{x}")], t)
+    check("waiting: set not attempted, nothing failed", s["failed"] == 0 and "rel/payload.bin" not in t
+          and not os.path.exists(f"{src}/rel"), (s["failures"], t))
+    w = s["waiting"]
+    check("waiting: the set is listed as waiting with the new zips",
+          w and w[0]["dir"] == src and w[0]["count"] == 3 and "rel.part1.rar" in w[0]["names"], w)
+    m = logs(eng)
+    check("waiting: logged once in plain words",
+          len([x for x in m if x.startswith("Waiting: rel.part1.rar - some of its pieces are still in archives that are too new")]) == 1, m)
+    check("waiting: nothing remembered as failed", not settings_failed(eng), settings_failed(eng))
+    for z in zips[3:]:
+        os.utime(z, (old, old))
+    s = run(eng, cfg)
+    t = tree(src)
+    check("waiting: later scan extracts the rest in place and then the set once",
+          t == ["rel/payload.bin"] and open(f"{src}/rel/payload.bin", "rb").read() == data and s["failed"] == 0, (t, s))
+    shutil.rmtree(work)
+
+
+def settings_failed(eng):
+    import json
+    try:
+        return json.load(open(eng.failed_file))
+    except (OSError, ValueError):
+        return {}
+
+
 def main():
     for fn in (test_names, test_settings, test_smart_basic, test_ten_zips, test_release_folder,
                test_release_inconsistency, test_root_is_never_a_release_folder, test_existing_folder_and_files,
@@ -760,7 +801,7 @@ def main():
                test_excluded_names, test_volume_archives, test_volume_archives_old_style,
                test_volume_archives_release_folder, test_volume_archives_user_example,
                test_volume_archives_not_only_pieces, test_volume_archives_failure,
-               test_volume_archives_duplicate_piece, test_modes, test_other_formats, test_oneoff, test_dry_run, test_empty_and_root):
+               test_volume_archives_duplicate_piece, test_volume_archives_wait_for_downloads, test_modes, test_other_formats, test_oneoff, test_dry_run, test_empty_and_root):
         fn()
     shutil.rmtree(CFG_DIR, ignore_errors=True)
     print("\nALL PASSED" if not FAILS else f"\nFAILED: {FAILS}")
