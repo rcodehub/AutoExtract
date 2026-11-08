@@ -37,6 +37,7 @@ RAR_RE = re.compile(r"^(.*)\.rar$", re.I)
 
 ARCHIVE_EXT_RE = re.compile(r"\.(?:tar\.gz|tar\.bz2|tar\.xz|tgz|tbz2|txz|tar|7z|zip|rar)$", re.I)
 OLD_VOL_RE = re.compile(r"\.(?:r\d\d|z\d\d+)$", re.I)          # name.r00, name.z01
+INFO_EXTS = (".nfo", ".diz", ".sfv", ".md5", ".sha1", ".sha256")   # small files that ride along with release archives
 SIMILAR_RATIO = 0.85
 MAX_NAME_BYTES = 247                   # 255 minus room for " (99999)"
 
@@ -91,6 +92,13 @@ def is_archive(name):
     if NUMVOL_RE.match(name):
         return True
     return name.lower().endswith(ARCHIVE_SUFFIXES)
+
+
+def is_archive_piece(name):
+    """An archive, or one piece of a split archive: .rar, .partN.rar, .rNN, .zip, .zNN, .7z, .7z.NNN, .zip.NNN, tar ..."""
+    if name.startswith(STAGE_PREFIX):
+        return False
+    return is_archive(name) or bool(OLD_VOL_RE.search(name))
 
 
 def is_secondary_volume(name):
@@ -982,27 +990,34 @@ class Engine:
 
     def _choose_target(self, stage, dest, cfg, path):
         """Where the extracted files go: dest itself, or dest/<archive name>/ (see the folder_per_archive
-        setting). Returns (folder, why); why is "" when nothing is wrapped."""
+        setting). Returns (folder, why, pieces); why is "" when nothing is wrapped, pieces is True when the
+        archive only holds archive pieces (and info files) and was extracted in place for that reason."""
         mode = cfg.get("folder_per_archive", "smart")
         if mode == "never" or path is None:
-            return dest, ""
+            return dest, "", False
         try:
             top = [(e.name, e.is_dir(follow_symlinks=False)) for e in os.scandir(stage)]
         except OSError:
-            return dest, ""
+            return dest, "", False
         if not top:
-            return dest, ""                                    # an empty archive extracts nothing
+            return dest, "", False                             # an empty archive extracts nothing
+        pieces = self._only_pieces(top, cfg)
+        if pieces:
+            shown = pieces[0] + (f" and {len(pieces) - 1} more" if len(pieces) > 1 else "")
+            self.log("info", f"Extracted in place: the archive only holds archive pieces ({shown}), "
+                             "so they stay together with the others")
+            return dest, "", True
         name = archive_base_name(path)
         one_folder = len(top) == 1 and top[0][1]
         if mode == "always":
             if one_folder and names_similar(top[0][0], name):
-                return dest, ""                                # avoid name/name
+                return dest, "", False                         # avoid name/name
             why = "folder per archive is set to Always"
         else:
             if self._is_release_folder(path, cfg):
-                return dest, ""
+                return dest, "", False
             if one_folder:
-                return dest, ""
+                return dest, "", False
             why = "the archive has no single top folder"
         name = self._wrapper_base(name, cfg)
         n = 0
@@ -1022,7 +1037,26 @@ class Engine:
             target = os.path.join(dest, f"{name} ({n})")
         if n:
             why += f"; using {os.path.basename(target)}/ because {last}"
-        return target, why
+        return target, why, False
+
+    def _is_info_file(self, name, cfg):
+        """A small file that rides along with release archives: .nfo/.diz/.sfv/checksums, or a junk pattern."""
+        low = name.lower()
+        if low.endswith(INFO_EXTS):
+            return True
+        return any(fnmatch.fnmatch(low, p.lower()) for p in cfg.get("junk_patterns", ()) if p.strip())
+
+    def _only_pieces(self, top, cfg):
+        """The archive pieces at the top level when that is ALL it holds (apart from info files), else []."""
+        pieces = []
+        for name, is_dir in top:
+            if is_dir:
+                return []
+            if is_archive_piece(name):
+                pieces.append(name)
+            elif not self._is_info_file(name, cfg):
+                return []
+        return sorted(pieces)
 
     def _wrapper_base(self, name, cfg):
         """Folder name for an archive: short enough for ' (n)' to fit in 255 bytes, and never one the scan
@@ -1051,7 +1085,7 @@ class Engine:
         ow = cfg["overwrite"]
         out = {"files": 0, "bytes": 0, "skipped": 0}
         with self.merge_lock:
-            dest, why = self._choose_target(stage, dest, cfg, path)
+            dest, why, in_place = self._choose_target(stage, dest, cfg, path)
             if why:
                 rel = os.path.basename(dest)
                 if os.path.isdir(dest):
@@ -1083,7 +1117,8 @@ class Engine:
                             out["skipped"] += 1
                             continue
                         if not ow:
-                            out["skipped"] += 1
+                            if not (in_place and self._is_info_file(fn, cfg)):
+                                out["skipped"] += 1        # (an info file that is already there is simply kept)
                             continue
                     try:
                         out["bytes"] += os.lstat(src).st_size
@@ -1091,9 +1126,10 @@ class Engine:
                         pass
                     os.replace(src, dst)
                     out["files"] += 1
-                    if is_archive(fn):
+                    if is_archive_piece(fn):
                         with self.lock:
-                            self.nested.add(dst)           # came out of an archive: complete, not a download
+                            if is_archive(fn):
+                                self.nested.add(dst)       # came out of an archive: complete, not a download
                             if path is not None:
                                 self._parents[dst] = path
         return out
