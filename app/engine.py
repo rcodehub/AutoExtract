@@ -152,6 +152,9 @@ class Engine:
         # archives that came out of an archive, remembered between scans: they are complete files,
         # so the "skip recent files" rule (meant for downloads in progress) never applies to them
         self.nested_path = os.path.join(os.path.dirname(history_path) or ".", "extracted-archives.json")
+        # archive pieces extracted in place out of other archives, remembered between scans so a set whose last
+        # piece is still downloading keeps waiting: {path: [size, mtime]}
+        self.inplace_path = os.path.join(os.path.dirname(history_path) or ".", "inplace-pieces.json")
         # archives the user cancelled: scheduled scans leave them alone until they change (Run now retries)
         self.cancelled_path = os.path.join(os.path.dirname(history_path) or ".", "cancelled-archives.json")
         # archives that failed for good (even when tried alone): scheduled scans leave them alone until they change
@@ -200,7 +203,7 @@ class Engine:
         self._slots = []
         self._dir_sets = {}          # folder -> archive sets found in it at the start of the current pass
         self._made = {}              # wrapper folder created in this run -> the archive set that created it
-        self._inplace = set()        # archive pieces extracted in place in this run
+        self._inplace = {}           # archive pieces extracted in place (this run and earlier ones) -> signature
         self._held = set()           # archive sets waiting for pieces still inside too-new archives
         self._parents = {}           # nested archive path -> the archive set it came out of (this run)
 
@@ -329,7 +332,7 @@ class Engine:
             self._made = {}
             self._parents = {}
             self._held = set()
-            self._inplace = set()
+            self._inplace = self._load_inplace()
             self._slots = [None] * cfg["threads"]
             self.thread.start()
             return True
@@ -438,6 +441,36 @@ class Engine:
         except (OSError, ValueError, TypeError):
             return set()
 
+    def _piece_sig(self, path):
+        try:
+            st = os.stat(path)
+            return [st.st_size, int(st.st_mtime)]
+        except OSError:
+            return None
+
+    def _load_inplace(self):
+        try:
+            with open(self.inplace_path) as f:
+                d = json.load(f)
+        except (OSError, ValueError, TypeError):
+            return {}
+        if not isinstance(d, dict):
+            return {}
+        return {k: v for k, v in d.items() if v and self._piece_sig(k) == v}     # gone or changed: forgotten
+
+    def _save_inplace(self):
+        with self.lock:
+            keep = {k: v for k, v in self._inplace.items() if self._piece_sig(k) == v}
+            self._inplace = keep
+            keep = dict(list(keep.items())[-20000:])
+        try:
+            tmp = self.inplace_path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(keep, f)
+            os.replace(tmp, self.inplace_path)
+        except OSError as e:
+            self.log("warn", f"Could not save {self.inplace_path}: {e}")
+
     def _save_nested(self):
         with self.lock:
             keep = sorted(p for p in self.nested if os.path.exists(p))[-20000:]
@@ -452,6 +485,7 @@ class Engine:
     def _finish(self, trigger, dry_run, result, message):
         if not dry_run:
             self._save_nested()
+            self._save_inplace()
         with self.lock:
             st = self.status
             st["finished_at"] = time.time()
@@ -620,7 +654,7 @@ class Engine:
             if not waiting:
                 return False
             group = self._archive_group(a)
-            came_out = any(f in self._inplace for f in group)
+            came_out = any(f in self._inplace and self._inplace[f] == self._piece_sig(f) for f in group)
         if not (came_out or self._volume_gaps(a)):
             return False
         with self.lock:
@@ -900,6 +934,9 @@ class Engine:
                 return "cancelled"
             if ok:
                 self._forget(path)
+                with self.lock:                      # the set is extracted: its pieces no longer need to wait
+                    for f in self._archive_group(path):
+                        self._inplace.pop(f, None)
                 bytes_in = 0
                 for f in self._archive_group(path):
                     try:
@@ -1199,7 +1236,7 @@ class Engine:
                             if path is not None:
                                 self._parents[dst] = path
                             if in_place:
-                                self._inplace.add(dst)
+                                self._inplace[dst] = self._piece_sig(dst)
         return out
 
     def _remove_stale_stages(self, d):

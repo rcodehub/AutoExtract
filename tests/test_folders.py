@@ -794,6 +794,57 @@ def settings_failed(eng):
         return {}
 
 
+def test_volume_archives_wait_across_scans():
+    work, src, eng = fresh()
+    tmp = os.path.join(work, "pieces")
+    names, data = make_pieces(tmp, "rel")
+    zips = zips_of_pieces(work, src, src, "release", tmp, names)
+    old = time.time() - 3600
+    for z in zips[:-1]:
+        os.utime(z, (old, old))
+    cfg = cfg_for(sources=[src], min_age_minutes=5)
+    run(eng, cfg)
+    for i in (2, 3):
+        eng.log_buf.clear()
+        s = run(eng, cfg)
+        t = tree(src)
+        waits = [x for x in logs(eng) if x.startswith("Waiting: rel.part1.rar")]
+        check(f"across scans: run {i} holds the set again, no failure, one Waiting line",
+              s["failed"] == 0 and len(waits) == 1 and not os.path.exists(f"{src}/rel")
+              and all(n in t for n in names[:-1]) and not [x for x in os.listdir(src) if os.path.isdir(f"{src}/{x}")],
+              (s["failures"], waits, t))
+        if i == 2:
+            check("across scans: the set shows as waiting", s["waiting"] and "rel.part1.rar" in s["waiting"][0]["names"], s["waiting"])
+            eng = Engine(os.path.join(work, "cfg", "logs"), os.path.join(work, "cfg", "history.json"))   # a restart
+    os.utime(zips[-1], (old, old))
+    s = run(eng, cfg)
+    t = tree(src)
+    check("across scans: once the last zip is old, it and the set extract once",
+          t == ["rel/payload.bin"] and open(f"{src}/rel/payload.bin", "rb").read() == data and s["failed"] == 0, (t, s))
+    check("across scans: nothing left remembered once the set is extracted", not settings_inplace(eng), settings_inplace(eng))
+    shutil.rmtree(work)
+    # an ordinary nested archive is never held
+    work, src, eng = fresh()
+    inner = os.path.join(work, "inner.zip")
+    mkzip(inner, {"a.txt": "a"})
+    mkzip(f"{src}/outer.zip", {"inner.zip": ("file", inner), "readme.txt": "r"})
+    mkzip(f"{src}/new.zip", {"n.txt": "n"})
+    old = time.time() - 3600
+    os.utime(f"{src}/outer.zip", (old, old))
+    run(eng, cfg_for(sources=[src], min_age_minutes=5))
+    run(eng, cfg_for(sources=[src], min_age_minutes=5))
+    check("across scans: an ordinary nested archive is not held", any(x.endswith("a.txt") for x in tree(src)), tree(src))
+    shutil.rmtree(work)
+
+
+def settings_inplace(eng):
+    import json
+    try:
+        return json.load(open(eng.inplace_path))
+    except (OSError, ValueError):
+        return {}
+
+
 def main():
     for fn in (test_names, test_settings, test_smart_basic, test_ten_zips, test_release_folder,
                test_release_inconsistency, test_root_is_never_a_release_folder, test_existing_folder_and_files,
@@ -801,7 +852,8 @@ def main():
                test_excluded_names, test_volume_archives, test_volume_archives_old_style,
                test_volume_archives_release_folder, test_volume_archives_user_example,
                test_volume_archives_not_only_pieces, test_volume_archives_failure,
-               test_volume_archives_duplicate_piece, test_volume_archives_wait_for_downloads, test_modes, test_other_formats, test_oneoff, test_dry_run, test_empty_and_root):
+               test_volume_archives_duplicate_piece, test_volume_archives_wait_for_downloads, test_volume_archives_wait_across_scans,
+               test_modes, test_other_formats, test_oneoff, test_dry_run, test_empty_and_root):
         fn()
     shutil.rmtree(CFG_DIR, ignore_errors=True)
     print("\nALL PASSED" if not FAILS else f"\nFAILED: {FAILS}")
