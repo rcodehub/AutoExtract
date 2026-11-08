@@ -204,6 +204,7 @@ class Engine:
         self._dir_sets = {}          # folder -> archive sets found in it at the start of the current pass
         self._made = {}              # wrapper folder created in this run -> the archive set that created it
         self._inplace = {}           # archive pieces extracted in place (this run and earlier ones) -> signature
+        self._held_by = {}           # held set -> names of the too-new archives it waits for
         self._held = set()           # archive sets waiting for pieces still inside too-new archives
         self._parents = {}           # nested archive path -> the archive set it came out of (this run)
 
@@ -296,6 +297,8 @@ class Engine:
             g = groups.setdefault(os.path.dirname(p), {"dir": os.path.dirname(p), "count": 0, "names": [], "ready_at": None})
             g["count"] += 1
             g["names"].append(os.path.basename(p))
+            if p in self._held_by:
+                g.setdefault("held", {})[os.path.basename(p)] = self._held_by[p]
             r = self.deferred_ready.get(p)
             if r and (g["ready_at"] is None or r > g["ready_at"]):
                 g["ready_at"] = r            # the whole folder is ready when its newest archive is
@@ -332,6 +335,7 @@ class Engine:
             self._made = {}
             self._parents = {}
             self._held = set()
+            self._held_by = {}
             self._inplace = self._load_inplace()
             self._slots = [None] * cfg["threads"]
             self.thread.start()
@@ -458,11 +462,11 @@ class Engine:
             return {}
         return {k: v for k, v in d.items() if v and self._piece_sig(k) == v}     # gone or changed: forgotten
 
-    def _save_inplace(self):
+    def _save_inplace(self, prune=True):
         with self.lock:
-            keep = {k: v for k, v in self._inplace.items() if self._piece_sig(k) == v}
-            self._inplace = keep
-            keep = dict(list(keep.items())[-20000:])
+            if prune:
+                self._inplace = {k: v for k, v in self._inplace.items() if self._piece_sig(k) == v}
+            keep = dict(list(self._inplace.items())[-20000:])
         try:
             tmp = self.inplace_path + ".tmp"
             with open(tmp, "w") as f:
@@ -645,27 +649,56 @@ class Engine:
             nums.append(1)
         return set(nums) != set(range(1, max(nums) + 1))
 
+    def _is_volume_header(self, path):
+        """A single .rar/.7z/.zip whose own header says it is one volume of a set."""
+        t, low = self.tools, path.lower()
+        try:
+            if low.endswith(".rar") and t["unrar"]:
+                code, out = self._exec([t["unrar"], "lt", "-p-", "-idc", path])
+                for line in (out or "").splitlines():
+                    if line.strip().lower().startswith("details:"):
+                        return "volume" in line.lower()
+            elif low.endswith((".7z", ".zip")) and t["7z"]:
+                code, out = self._exec([t["7z"], "l", "-slt", "-p-", path])
+                return bool(re.search(r"^(Multivolume = \+|Volume Index = )", out or "", re.M))
+        except Exception:  # noqa: BLE001 - a failed look means "not a volume"
+            pass
+        return False
+
+    def _multi_volume(self, a, came_out):
+        """True for a set made of several volumes: name.partN.rar, name.rar + name.rNN, name.zip + name.zNN,
+        name.7z.NNN ... or a single file whose header says it is a volume (only looked at for pieces
+        that came out of another archive)."""
+        base = os.path.basename(a)
+        if FIRST_PART_RE.match(base) or NUMVOL_RE.match(base) or len(self._archive_group(a)) > 1:
+            return True
+        return came_out and self._is_volume_header(a)
+
     def _hold_for_pieces(self, d, a):
         """True when the archive set must wait: some archive in this folder is still too new (maybe still
-        downloading) and this set has pieces that came out of an archive in this run, or its numbering has
-        a gap - so a piece may still be inside one of the too-new archives."""
+        downloading) and this is a multi-volume set with pieces that came out of an archive (in this or an
+        earlier run), or whose numbering has a gap - so a piece may still be inside a too-new archive."""
         with self.lock:
-            waiting = [p for p in self.deferred if os.path.dirname(p) == d and p not in self._held]
+            waiting = sorted(p for p in self.deferred if os.path.dirname(p) == d and p not in self._held)
             if not waiting:
                 return False
-            group = self._archive_group(a)
-            came_out = any(f in self._inplace and self._inplace[f] == self._piece_sig(f) for f in group)
+            came_out = any(f in self._inplace and self._inplace[f] == self._piece_sig(f)
+                           for f in self._archive_group(a))
         if not (came_out or self._volume_gaps(a)):
             return False
+        if not self._multi_volume(a, came_out):
+            return False
+        names = [os.path.basename(p) for p in waiting]
+        shown = ", ".join(names[:5]) + (f" and {len(names) - 5} more" if len(names) > 5 else "")
         with self.lock:
             ready = max((self.deferred_ready.get(p, 0) for p in waiting), default=0)
             new = a not in self._held
             self.deferred.add(a)
             self.deferred_ready[a] = ready
             self._held.add(a)
+            self._held_by[a] = shown
         if new:
-            self.log("info", f"Waiting: {os.path.basename(a)} - some of its pieces are still in archives that "
-                             "are too new")
+            self.log("info", f"Waiting: {os.path.basename(a)} - some of its pieces may still be in {shown} (too new)")
         return True
 
     def _is_release_folder(self, path, cfg):
@@ -683,7 +716,8 @@ class Engine:
         name = archive_base_name(path)
         if mode == "smart" and self._is_release_folder(path, cfg):
             return "into this folder (it is the archive's own folder)"
-        return f"into a folder named after the archive ({name}/) unless it holds a single folder"
+        return (f"into a folder named after the archive ({name}/) unless it holds a single folder, "
+                "or only pieces of other archives (then in place)")
 
     # ------------------------------------------------------------ one directory
     def _process_dir(self, d, root, cfg, pool):
@@ -1149,6 +1183,22 @@ class Engine:
             return True
         return any(fnmatch.fnmatch(low, p.lower()) for p in cfg.get("junk_patterns", ()) if p.strip())
 
+    @staticmethod
+    def _same_content(a, b):
+        """Same size and same SHA-256."""
+        import hashlib
+        try:
+            if os.path.islink(a) or os.path.islink(b) or os.path.getsize(a) != os.path.getsize(b):
+                return False
+            ha, hb = hashlib.sha256(), hashlib.sha256()
+            for f, h in ((a, ha), (b, hb)):
+                with open(f, "rb") as fh:
+                    for chunk in iter(lambda: fh.read(1 << 20), b""):
+                        h.update(chunk)
+            return ha.digest() == hb.digest()
+        except OSError:
+            return False
+
     def _only_pieces(self, top, cfg):
         """The archive pieces at the top level when that is ALL it holds (apart from info files), else []."""
         pieces = []
@@ -1187,6 +1237,7 @@ class Engine:
         after the archive, when path is given and the setting says so)."""
         ow = cfg["overwrite"]
         out = {"files": 0, "bytes": 0, "skipped": 0}
+        added_inplace = False
         with self.merge_lock:
             dest, why, in_place = self._choose_target(stage, dest, cfg, path)
             if why:
@@ -1220,8 +1271,8 @@ class Engine:
                             out["skipped"] += 1
                             continue
                         if not ow:
-                            if not (in_place and self._is_info_file(fn, cfg)):
-                                out["skipped"] += 1        # (an info file that is already there is simply kept)
+                            if not (in_place and self._is_info_file(fn, cfg) and self._same_content(src, dst)):
+                                out["skipped"] += 1        # (an identical info file that is already there is simply kept)
                             continue
                     try:
                         out["bytes"] += os.lstat(src).st_size
@@ -1237,6 +1288,9 @@ class Engine:
                                 self._parents[dst] = path
                             if in_place:
                                 self._inplace[dst] = self._piece_sig(dst)
+                                added_inplace = True
+            if added_inplace and not cfg.get("dry_run"):
+                self._save_inplace(prune=False)           # remembered at once, in case the run is cut short
         return out
 
     def _remove_stale_stages(self, d):

@@ -775,7 +775,7 @@ def test_volume_archives_wait_for_downloads():
           w and w[0]["dir"] == src and w[0]["count"] == 3 and "rel.part1.rar" in w[0]["names"], w)
     m = logs(eng)
     check("waiting: logged once in plain words",
-          len([x for x in m if x.startswith("Waiting: rel.part1.rar - some of its pieces are still in archives that are too new")]) == 1, m)
+          len([x for x in m if x.startswith("Waiting: rel.part1.rar - some of its pieces may still be in release4.zip, release5.zip (too new)")]) == 1, m)
     check("waiting: nothing remembered as failed", not settings_failed(eng), settings_failed(eng))
     for z in zips[3:]:
         os.utime(z, (old, old))
@@ -808,7 +808,7 @@ def test_volume_archives_wait_across_scans():
         eng.log_buf.clear()
         s = run(eng, cfg)
         t = tree(src)
-        waits = [x for x in logs(eng) if x.startswith("Waiting: rel.part1.rar")]
+        waits = [x for x in logs(eng) if x.startswith("Waiting: rel.part1.rar - some of its pieces may still be in release5.zip (too new)")]
         check(f"across scans: run {i} holds the set again, no failure, one Waiting line",
               s["failed"] == 0 and len(waits) == 1 and not os.path.exists(f"{src}/rel")
               and all(n in t for n in names[:-1]) and not [x for x in os.listdir(src) if os.path.isdir(f"{src}/{x}")],
@@ -845,6 +845,108 @@ def settings_inplace(eng):
         return {}
 
 
+def mk_small_rar(work, name, text="x"):
+    d = os.path.join(work, "small-" + name)
+    os.makedirs(d, exist_ok=True)
+    open(os.path.join(d, "f.txt"), "w").write(text)
+    out = os.path.join(work, name + ".rar")
+    subprocess.run(["rar", "a", "-idq", "-y", "-ep", "-ma5", out, os.path.join(d, "f.txt")],
+                   stdin=subprocess.DEVNULL, check=True)
+    return out
+
+
+def test_pieces_info_file_clash_data_loss():
+    for ow in (False, True):
+        work, src, eng = fresh()
+        q, r = mk_small_rar(work, "q", "q"), mk_small_rar(work, "r", "r")
+        mkzip(f"{src}/z1.zip", {"q.rar": ("file", q), "checksums.md5": "AAAA q.rar", "sums.sfv": "same sfv"})
+        mkzip(f"{src}/z2.zip", {"r.rar": ("file", r), "checksums.md5": "BBBB r.rar", "sums.sfv": "same sfv"})
+        s = run(eng, cfg_for(sources=[src], threads=1, overwrite=ow, archive_mode="delete", junk_patterns=[]))
+        t = tree(src)
+        zips = [x for x in t if x.endswith(".zip")]
+        if not ow:
+            check("info files that differ: the second zip is kept (nothing lost)", len(zips) == 1, t)
+            keptzip = zips[0] if zips else ""
+            have = {open(f"{src}/{x}").read() for x in t if x.endswith("checksums.md5")}
+            with zipfile.ZipFile(f"{src}/{keptzip}") as z:
+                other = z.read("checksums.md5").decode() if keptzip else ""
+            check("info files that differ: both versions still exist somewhere",
+                  {"AAAA q.rar", "BBBB r.rar"} == have | {other}, (have, other))
+            check("info files that differ: the kept zip is remembered as 'exists'",
+                  any(v.get("why") == "exists" for v in settings_kept(eng).values()), settings_kept(eng))
+            check("identical info files (sums.sfv): kept once, not a reason to keep a zip",
+                  len([x for x in t if x.endswith("sums.sfv")]) == 1, t)
+        else:
+            check("info files that differ (overwrite on): replaced as the setting says, zips disposed",
+                  not zips and s["failed"] == 0, t)
+        shutil.rmtree(work)
+    work, src, eng = fresh()                       # a junk-pattern file that differs is a normal clash too
+    q, r = mk_small_rar(work, "q", "q"), mk_small_rar(work, "r", "r")
+    mkzip(f"{src}/z1.zip", {"q.rar": ("file", q), "file_id.diz": "ONE"})
+    mkzip(f"{src}/z2.zip", {"r.rar": ("file", r), "file_id.diz": "TWO"})
+    run(eng, cfg_for(sources=[src], threads=1, junk_mode="keep", archive_mode="delete", overwrite=False))
+    check("differing junk-pattern file: one zip kept", len([x for x in tree(src) if x.endswith(".zip")]) == 1, tree(src))
+    shutil.rmtree(work)
+
+
+def test_pieces_hold_only_multi_volume():
+    work, src, eng = fresh()                       # the literal example next to an unrelated brand-new zip
+    for n in (1, 2):
+        rar = mk_small_rar(work, f"archive{n}", str(n))
+        mkzip(f"{src}/archive{n}.zip", {f"archive{n}.rar": ("file", rar)})
+        old = time.time() - 3600
+        os.utime(f"{src}/archive{n}.zip", (old, old))
+    mkzip(f"{src}/unrelated.zip", {"u.txt": "u"})
+    s = run(eng, cfg_for(sources=[src], min_age_minutes=5))
+    t = tree(src)
+    check("complete single archives are not held by an unrelated too-new zip",
+          {"archive1/f.txt", "archive2/f.txt", "unrelated.zip"} <= set(t) and s["failed"] == 0
+          and not [x for x in logs(eng) if x.startswith("Waiting:")], (t, logs(eng)))
+    shutil.rmtree(work)
+    # a lone first volume of an old-style set (header says volume) IS held while the rest may be downloading
+    work, src, eng = fresh()
+    tmp = os.path.join(work, "pieces")
+    names, data = make_pieces(tmp, "rel", size=30_000, old_style=True)
+    if names is None or len(names) != 2:
+        print("NOTE: old-style pieces unavailable - the lone-volume header case is skipped")
+        shutil.rmtree(work)
+        return
+    zips = zips_of_pieces(work, src, src, "rel-grp", tmp, names)
+    old = time.time() - 3600
+    os.utime(zips[0], (old, old))
+    s = run(eng, cfg_for(sources=[src], min_age_minutes=5))
+    t = tree(src)
+    check("a lone .rar whose header says it is a volume is held", "rel.rar" in t and not os.path.exists(f"{src}/rel")
+          and s["failed"] == 0 and [x for x in logs(eng) if x.startswith("Waiting: rel.rar - some of its pieces may still be in rel-grp2.zip (too new)")],
+          (t, logs(eng)))
+    w = s["waiting"]
+    check("the waiting entry names what the set waits for",
+          w and w[0].get("held", {}).get("rel.rar") == "rel-grp2.zip", w)
+    os.utime(zips[1], (old, old))
+    s = run(eng, cfg_for(sources=[src], min_age_minutes=5))
+    check("...and extracted once the rest is old enough", tree(src) == ["rel/payload.bin"] and s["failed"] == 0, tree(src))
+    shutil.rmtree(work)
+
+
+def test_pieces_dry_run_text_and_persist():
+    work, src, eng = fresh()
+    mkzip(f"{src}/rel-grp1.zip", {"rel.part1.rar": "x"})
+    run(eng, cfg_for(sources=[src]), dry=True)
+    check("dry run: honest about pieces-only archives",
+          any("unless it holds a single folder, or only pieces of other archives (then in place)" in x for x in logs(eng)), logs(eng))
+    shutil.rmtree(work)
+    work, src, eng = fresh()                       # remembered right after each in-place merge, not only at the end
+    tmp = os.path.join(work, "pieces")
+    names, data = make_pieces(tmp, "rel")
+    zips_of_pieces(work, src, src, "release", tmp, names)
+    seen = []
+    real = eng._save_inplace
+    eng._save_inplace = lambda prune=True: (seen.append(prune), real(prune))[1]
+    run(eng, cfg_for(sources=[src]))
+    check("in-place pieces are saved during the run, before it finishes", seen and seen[0] is False and len(seen) > 1, seen)
+    shutil.rmtree(work)
+
+
 def main():
     for fn in (test_names, test_settings, test_smart_basic, test_ten_zips, test_release_folder,
                test_release_inconsistency, test_root_is_never_a_release_folder, test_existing_folder_and_files,
@@ -852,7 +954,8 @@ def main():
                test_excluded_names, test_volume_archives, test_volume_archives_old_style,
                test_volume_archives_release_folder, test_volume_archives_user_example,
                test_volume_archives_not_only_pieces, test_volume_archives_failure,
-               test_volume_archives_duplicate_piece, test_volume_archives_wait_for_downloads, test_volume_archives_wait_across_scans,
+               test_volume_archives_duplicate_piece, test_volume_archives_wait_for_downloads, test_volume_archives_wait_across_scans, test_pieces_info_file_clash_data_loss,
+               test_pieces_hold_only_multi_volume, test_pieces_dry_run_text_and_persist,
                test_modes, test_other_formats, test_oneoff, test_dry_run, test_empty_and_root):
         fn()
     shutil.rmtree(CFG_DIR, ignore_errors=True)
