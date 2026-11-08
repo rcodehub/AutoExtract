@@ -581,7 +581,11 @@ class Engine:
             sets = self._dir_sets.get(d)
         if sets is None:
             sets = self._archive_sets(d)
-        skip = self._ancestors(path) | {path}      # the archive it came out of is not a neighbour
+        # the archives it came out of are not neighbours - for every volume: the pieces of a set can come
+        # out of different archives (movie1.zip holds part1, movie2.zip holds part2 ...)
+        skip = {path}
+        for f in self._archive_group(path):
+            skip |= self._ancestors(f)
         return any(p not in skip for p in sets)
 
     def _is_release_folder(self, path, cfg):
