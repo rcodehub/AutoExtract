@@ -317,7 +317,8 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
         <select id="folder_per_archive"><option value="smart">Smart</option><option value="always">Always</option><option value="never">Never</option></select>
         <div class="hint"><b>Smart:</b> archives whose contents have no single top folder are extracted into a folder named after the archive, so several archives in one folder don't get mixed. An archive that already holds one folder, or sits alone in a folder named like it, is extracted as is.<br>
           <b>Always:</b> every archive gets its own folder named after it (unless it already holds one folder with that name).<br>
-          <b>Never:</b> everything is extracted next to the archive.</div></div>
+          <b>Never:</b> everything is extracted next to the archive.<br>
+          Archives that only hold pieces of other archives are extracted in place so the pieces stay together.</div></div>
     </section>
 
     <section class="card">
