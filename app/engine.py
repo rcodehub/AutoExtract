@@ -200,6 +200,7 @@ class Engine:
         self._slots = []
         self._dir_sets = {}          # folder -> archive sets found in it at the start of the current pass
         self._made = {}              # wrapper folder created in this run -> the archive set that created it
+        self._inplace = set()        # archive pieces extracted in place in this run
         self._held = set()           # archive sets waiting for pieces still inside too-new archives
         self._parents = {}           # nested archive path -> the archive set it came out of (this run)
 
@@ -328,6 +329,7 @@ class Engine:
             self._made = {}
             self._parents = {}
             self._held = set()
+            self._inplace = set()
             self._slots = [None] * cfg["threads"]
             self.thread.start()
             return True
@@ -618,7 +620,7 @@ class Engine:
             if not waiting:
                 return False
             group = self._archive_group(a)
-            came_out = any(f in self._parents for f in group)
+            came_out = any(f in self._inplace for f in group)
         if not (came_out or self._volume_gaps(a)):
             return False
         with self.lock:
@@ -1196,6 +1198,8 @@ class Engine:
                                 self.nested.add(dst)       # came out of an archive: complete, not a download
                             if path is not None:
                                 self._parents[dst] = path
+                            if in_place:
+                                self._inplace.add(dst)
         return out
 
     def _remove_stale_stages(self, d):
