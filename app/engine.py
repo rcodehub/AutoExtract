@@ -648,6 +648,20 @@ class Engine:
                     self.log("info", f"[dry run] would extract {self._dry_target_text(a, d, cfg)}, "
                                      f"then {self._act_text(cfg['archive_mode'], cfg)}: {a}")
             elif todo:
+                # an archive that failed once in parallel may hold a piece of a RAR set that is about to be
+                # extracted: try it alone first, so the set is not started with a piece missing
+                early = [a for a in pending if not a.lower().endswith(".rar") and os.path.exists(a)]
+                if early and any(a.lower().endswith(".rar") for a in todo):
+                    pending = [a for a in pending if a not in early]
+                    for a in early:
+                        if self.stop_event.is_set():
+                            return
+                        self.log("info", f"Retrying on its own, before the RAR sets that may need it: {a}")
+                        if self._work(a, root, cfg, True) == "ok":
+                            did += 1
+                    if did:                  # new pieces may have arrived: look at the folder again
+                        self._clean_junk(d, root, cfg)
+                        continue
                 # zip/7z/tar first: they often contain the parts of a RAR set
                 batch = [a for a in todo if not a.lower().endswith(".rar")] or todo
                 futures = [(a, pool.submit(self._work, a, root, cfg, False)) for a in batch]

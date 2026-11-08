@@ -505,11 +505,262 @@ def test_empty_and_root():
     shutil.rmtree(work)
 
 
+def make_pieces(tmp, name, size=90_000, old_style=False):
+    """RAR5 volume set (loose payload.bin) built in tmp; returns (piece file names in order, payload bytes).
+    old_style renames the set to name.rar + name.r00 ... (only if unrar still reads it, else None)."""
+    os.makedirs(tmp, exist_ok=True)
+    mkrar_set(tmp, name, size=size)
+    parts = sorted(os.listdir(tmp))
+    # payload is random: recover it by extracting the set once
+    chk = tempfile.mkdtemp(prefix="ea-chk-")
+    try:
+        subprocess.run(["unrar", "x", "-idq", "-y", os.path.join(tmp, parts[0]), chk + "/"], stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        data = open(os.path.join(chk, "payload.bin"), "rb").read()
+    finally:
+        shutil.rmtree(chk, ignore_errors=True)
+    if old_style:
+        os.rename(os.path.join(tmp, parts[0]), os.path.join(tmp, name + ".rar"))
+        names = [name + ".rar"]
+        for i, f in enumerate(parts[1:]):
+            os.rename(os.path.join(tmp, f), os.path.join(tmp, f"{name}.r{i:02d}"))
+            names.append(f"{name}.r{i:02d}")
+        chk = tempfile.mkdtemp(prefix="ea-chk-")
+        try:
+            r = subprocess.run(["unrar", "x", "-idq", "-y", os.path.join(tmp, names[0]), chk + "/"],
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            ok = r.returncode == 0 and os.path.exists(os.path.join(chk, "payload.bin"))
+        finally:
+            shutil.rmtree(chk, ignore_errors=True)
+        if not ok:
+            return None, None
+        return names, data
+    return parts, data
+
+
+def zips_of_pieces(work, src, folder, prefix, tmp, names, extra=None, dup=None):
+    """one zip per piece: <prefix>1.zip ... each holding the piece (+ extra files)."""
+    zips = []
+    for i, n in enumerate(names, 1):
+        files = {n: ("file", os.path.join(tmp, n))}
+        files.update(extra or {})
+        z = os.path.join(folder, f"{prefix}{i}.zip")
+        mkzip(z, files)
+        zips.append(z)
+    return zips
+
+
+def test_volume_archives():
+    for fpa in ("smart", "always"):
+        for ow in (False, True):
+            for mode in ("delete", "keep"):
+                work, src, eng = fresh()
+                tmp = os.path.join(work, "pieces")
+                names, data = make_pieces(tmp, "rel")
+                zips = zips_of_pieces(work, src, src, "release", tmp, names, {"file_id.diz": "same diz"})
+                s = run(eng, cfg_for(sources=[src], folder_per_archive=fpa, overwrite=ow, archive_mode=mode))
+                t = tree(src)
+                tag = f"pieces in zips ({fpa}, overwrite {'on' if ow else 'off'}, {mode})"
+                check(f"{tag}: set extracted once into rel/", "rel/payload.bin" in t
+                      and open(f"{src}/rel/payload.bin", "rb").read() == data, t)
+                check(f"{tag}: no release1/.. folders",
+                      not [x for x in os.listdir(src) if x.startswith("release") and os.path.isdir(f"{src}/{x}")], os.listdir(src))
+                check(f"{tag}: diz cleaned by the junk rules", not [x for x in t if x.endswith(".diz")], t)
+                if mode == "delete":
+                    check(f"{tag}: zips and pieces disposed", not [x for x in t if x.endswith((".zip", ".rar"))], t)
+                else:
+                    check(f"{tag}: zips and the pieces they held are kept (keep mode)",
+                          sorted(x for x in t if x.endswith(".zip")) == sorted(os.path.basename(z) for z in zips)
+                          and sorted(x for x in t if x.endswith(".rar")) == sorted(names), t)
+                check(f"{tag}: all archives extracted, nothing failed",
+                      s["extracted"] == len(zips) + 1 and s["failed"] == 0, s)
+                m = logs(eng)
+                check(f"{tag}: logged in plain words",
+                      any("Extracted in place: the archive only holds archive pieces (" in x
+                          and "so they stay together with the others" in x for x in m), m)
+                if not ow and mode == "keep":
+                    kept = settings_kept(eng)
+                    check(f"{tag}: info-file clash did not mark zips as kept-because-exists",
+                          not any(v.get("why") == "exists" for v in kept.values() if isinstance(v, dict)), kept)
+                shutil.rmtree(work)
+    # never: unchanged (each zip wrapped, set split)
+    work, src, eng = fresh()
+    tmp = os.path.join(work, "pieces")
+    names, data = make_pieces(tmp, "rel")
+    zips_of_pieces(work, src, src, "release", tmp, names)
+    run(eng, cfg_for(sources=[src], folder_per_archive="never"))
+    t = tree(src)
+    check("pieces in zips (never): pieces land in the source folder, set extracted into it",
+          "payload.bin" in t, t)
+    shutil.rmtree(work)
+
+
+def settings_kept(eng):
+    import json
+    try:
+        return json.load(open(eng.kept_file))
+    except (OSError, ValueError):
+        return {}
+
+
+def test_volume_archives_old_style():
+    work, src, eng = fresh()
+    tmp = os.path.join(work, "pieces")
+    names, data = make_pieces(tmp, "rel", old_style=True)
+    if names is None:
+        print("NOTE: old-style .rar + .rNN pieces cannot be built in this sandbox (unrar does not accept the "
+              "renamed set) - that case is skipped")
+        shutil.rmtree(work)
+        return
+    zips_of_pieces(work, src, src, "rel-", tmp, names, {"rel.nfo": "nfo"})
+    s = run(eng, cfg_for(sources=[src]))
+    t = tree(src)
+    check("old-style pieces (.rar + .rNN) in zips: set extracted once into rel/",
+          "rel/payload.bin" in t and open(f"{src}/rel/payload.bin", "rb").read() == data and s["failed"] == 0, (t, s))
+    check("old-style pieces: no wrapper folders per zip", not [x for x in os.listdir(src) if x.startswith("rel-")], os.listdir(src))
+    shutil.rmtree(work)
+    # .z01/.zip pieces and 7z.001 pieces are recognised as pieces too
+    from engine import is_archive_piece
+    check("pieces: every kind recognised",
+          all(is_archive_piece(x) for x in ("a.rar", "a.part02.rar", "a.r00", "a.z01", "a.zip", "a.7z", "a.7z.001",
+                                            "a.zip.002", "a.tar.gz", "a.tgz")) and not is_archive_piece("a.pdf"))
+
+
+def test_volume_archives_release_folder():
+    work, src, eng = fresh()
+    d = f"{src}/Movie.2016-GRP"
+    tmp = os.path.join(work, "pieces")
+    names, data = make_pieces(tmp, "movie.2016-grp")
+    zips_of_pieces(work, src, d, "movie", tmp, names, {"movie.2016-grp.nfo": "nfo"})
+    s = run(eng, cfg_for(sources=[src], overwrite=False))
+    t = tree(src)
+    check("pieces in a release folder: contents directly in the release folder",
+          "Movie.2016-GRP/payload.bin" in t and open(f"{d}/payload.bin", "rb").read() == data, t)
+    check("pieces in a release folder: no extra folders, nfo kept",
+          not [x for x in t if x.count("/") > 1] and "Movie.2016-GRP/movie.2016-grp.nfo" in t, t)
+    check("pieces in a release folder: all extracted", s["failed"] == 0 and s["extracted"] == len(names) + 1, s)
+    shutil.rmtree(work)
+
+
+def test_volume_archives_user_example():
+    work, src, eng = fresh()
+    for n in (1, 2):
+        tmp = os.path.join(work, f"in{n}")
+        os.makedirs(tmp)
+        for fn in ("one.txt", "two.txt"):
+            open(os.path.join(tmp, f"{fn}"), "w").write(f"{n}{fn}")
+        subprocess.run(["rar", "a", "-idq", "-y", "-ep", "-ma5", os.path.join(work, f"archive{n}.rar"),
+                        os.path.join(tmp, "one.txt"), os.path.join(tmp, "two.txt")], stdin=subprocess.DEVNULL, check=True)
+        mkzip(f"{src}/archive{n}.zip", {f"archive{n}.rar": ("file", os.path.join(work, f"archive{n}.rar"))})
+    # dry run first: nothing changes
+    run(eng, cfg_for(sources=[src], archive_mode="keep"), dry=True)
+    check("user example: dry run changes nothing", tree(src) == ["archive1.zip", "archive2.zip"], tree(src))
+    s = run(eng, cfg_for(sources=[src], archive_mode="delete"))
+    t = tree(src)
+    check("user example: each .rar extracts by the normal rule into its own folder",
+          t == ["archive1/one.txt", "archive1/two.txt", "archive2/one.txt", "archive2/two.txt"], t)
+    check("user example: nothing failed", s["failed"] == 0 and s["extracted"] == 4, s)
+    shutil.rmtree(work)
+    # keep: the two .rar files sit side by side in the folder, not in archive1/ archive2/
+    work, src, eng = fresh()
+    for n in (1, 2):
+        tmp = os.path.join(work, f"in{n}")
+        os.makedirs(tmp)
+        open(os.path.join(tmp, "one.txt"), "w").write(str(n))
+        subprocess.run(["rar", "a", "-idq", "-y", "-ep", "-ma5", os.path.join(work, f"archive{n}.rar"),
+                        os.path.join(tmp, "one.txt")], stdin=subprocess.DEVNULL, check=True)
+        mkzip(f"{src}/archive{n}.zip", {f"archive{n}.rar": ("file", os.path.join(work, f"archive{n}.rar"))})
+    run(eng, cfg_for(sources=[src], archive_mode="keep", min_age_minutes=0), oneoff=None)
+    t = tree(src)
+    check("user example (keep): .rar files side by side with the zips, extracted to archive1/ archive2/",
+          {"archive1.rar", "archive2.rar", "archive1.zip", "archive2.zip", "archive1/one.txt", "archive2/one.txt"} == set(t), t)
+    shutil.rmtree(work)
+
+
+def test_volume_archives_not_only_pieces():
+    work, src, eng = fresh()
+    tmp = os.path.join(work, "x")
+    os.makedirs(tmp)
+    open(f"{tmp}/a.txt", "w").write("a")
+    subprocess.run(["rar", "a", "-idq", "-y", "-ep", "-ma5", os.path.join(tmp, "doc.rar"), os.path.join(tmp, "a.txt")],
+                   stdin=subprocess.DEVNULL, check=True)
+    mkzip(f"{src}/withpdf.zip", {"doc.rar": ("file", f"{tmp}/doc.rar"), "readme.pdf": "pdf"})
+    mkzip(f"{src}/infoonly.zip", {"x.nfo": "n", "file_id.diz": "d"})
+    run(eng, cfg_for(sources=[src], junk_patterns=[]))
+    t = tree(src)
+    check("rar plus a real file: wrapped as before", "withpdf/readme.pdf" in t and "withpdf/doc/a.txt" in t, t)
+    check("only .nfo/.diz: normal rules (wrapped)", {"infoonly/x.nfo", "infoonly/file_id.diz"} <= set(t), t)
+    shutil.rmtree(work)
+
+
+def test_volume_archives_failure():
+    work, src, eng = fresh()
+    tmp = os.path.join(work, "pieces")
+    names, data = make_pieces(tmp, "rel")
+    zips = zips_of_pieces(work, src, src, "release", tmp, names, {"file_id.diz": "d"})
+    with open(zips[2], "wb") as f:                 # the zip holding part 3 is corrupt
+        f.write(b"this is not a zip file")
+    s = run(eng, cfg_for(sources=[src], archive_mode="delete"))
+    t = tree(src)
+    rar_fail = [f for f in s["failures"] if f["path"].endswith(".rar")]
+    zip_fail = [f for f in s["failures"] if f["path"].endswith(".zip")]
+    check("missing piece: one failure for the RAR set, one for the broken zip",
+          len(rar_fail) == 1 and len(zip_fail) == 1 and s["failed"] == 2, s["failures"])
+    left = {n for n in names if n in t}
+    check("missing piece: the other pieces are still there, nothing lost",
+          left == {n for i, n in enumerate(names) if i != 2}, (left, t))
+    check("missing piece: the broken zip stays", os.path.basename(zips[2]) in t, t)
+    check("missing piece: nothing half-extracted", not [x for x in t if x.startswith("rel/")], t)
+    shutil.rmtree(work)
+    # a zip that fails once but works on its own retry: the set waits for it
+    work, src, eng = fresh()
+    tmp = os.path.join(work, "pieces")
+    names, data = make_pieces(tmp, "rel")
+    zips = zips_of_pieces(work, src, src, "release", tmp, names)
+    real = eng._exec
+    state = {"n": 0}
+
+    def flaky(cmd, slot=None):
+        if zips[1] in cmd and state["n"] < 2:           # unzip and the 7z fallback both glitch once
+            state["n"] += 1
+            return 9, "simulated glitch"
+        return real(cmd, slot)
+    eng._exec = flaky
+    s = run(eng, cfg_for(sources=[src], archive_mode="delete"))
+    t = tree(src)
+    check("flaky zip: retried before the RAR set, set extracted once and complete",
+          t == ["rel/payload.bin"] and s["failed"] == 0 and open(f"{src}/rel/payload.bin", "rb").read() == data, (t, s["failures"]))
+    check("flaky zip: the RAR set was never started with a piece missing",
+          not [x for x in logs(eng) if "Failed, will retry" in x and ".rar" in x], logs(eng))
+    shutil.rmtree(work)
+
+
+def test_volume_archives_duplicate_piece():
+    for ow in (False, True):
+        work, src, eng = fresh()
+        tmp = os.path.join(work, "pieces")
+        names, data = make_pieces(tmp, "rel")
+        zips_of_pieces(work, src, src, "release", tmp, names)
+        mkzip(f"{src}/zdup.zip", {names[1]: ("file", os.path.join(tmp, names[1]))})   # same piece twice
+        s = run(eng, cfg_for(sources=[src], overwrite=ow, archive_mode="delete"))
+        t = tree(src)
+        if ow:
+            check("duplicate piece (overwrite on): replaced, everything extracted and disposed",
+                  "rel/payload.bin" in t and s["failed"] == 0 and not [x for x in t if x.endswith(".zip")], (t, s))
+        else:
+            check("duplicate piece (overwrite off): the duplicate's zip is kept (a file was skipped), set extracted",
+                  "rel/payload.bin" in t and "zdup.zip" in t and s["failed"] == 0, (t, s))
+        shutil.rmtree(work)
+
+
 def main():
     for fn in (test_names, test_settings, test_smart_basic, test_ten_zips, test_release_folder,
                test_release_inconsistency, test_root_is_never_a_release_folder, test_existing_folder_and_files,
                test_nested, test_same_base_name, test_release_zip_with_rar_parts, test_long_names,
-               test_excluded_names, test_modes, test_other_formats, test_oneoff, test_dry_run, test_empty_and_root):
+               test_excluded_names, test_volume_archives, test_volume_archives_old_style,
+               test_volume_archives_release_folder, test_volume_archives_user_example,
+               test_volume_archives_not_only_pieces, test_volume_archives_failure,
+               test_volume_archives_duplicate_piece, test_modes, test_other_formats, test_oneoff, test_dry_run, test_empty_and_root):
         fn()
     shutil.rmtree(CFG_DIR, ignore_errors=True)
     print("\nALL PASSED" if not FAILS else f"\nFAILED: {FAILS}")
